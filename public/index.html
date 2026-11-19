@@ -37,8 +37,8 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
 /* sohbet */
 #app{position:relative;height:100%;display:flex;flex-direction:column;max-width:760px;margin:0 auto;border-left:1px solid var(--line);border-right:1px solid var(--line);overflow:hidden}
 #cbg{position:absolute;inset:0;z-index:0;background:radial-gradient(80% 60% at 70% 0%,#220a0e 0%,#050506 70%)}
-#cbg img{width:100%;height:100%;object-fit:cover;opacity:.5}
-#cbg::after{content:"";position:absolute;inset:0;background:linear-gradient(rgba(5,5,6,.55),rgba(5,5,6,.78))}
+#cbg img{width:100%;height:100%;object-fit:cover;opacity:.85}
+#cbg::after{content:"";position:absolute;inset:0;background:linear-gradient(rgba(5,5,6,.3),rgba(5,5,6,.6))}
 #app>*:not(#cbg){position:relative;z-index:1}
 #hd{display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--pan);border-bottom:1px solid var(--line);backdrop-filter:blur(8px)}
 #av{width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#d8404a,#5a1118);display:flex;align-items:center;justify-content:center;font-weight:700;box-shadow:0 0 14px var(--glow)}
@@ -55,7 +55,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
 #empty{margin:auto;color:var(--mut)}
 #form,#recbar{display:flex;gap:8px;padding:10px;background:var(--pan);border-top:1px solid var(--line);align-items:center;backdrop-filter:blur(8px)}
 #rt{flex:1;color:var(--red);font-variant-numeric:tabular-nums}
-#mic{padding:11px 13px}
+#mic,#pic{padding:11px 13px}
 .ov{position:fixed;inset:0;z-index:50;background:rgba(5,5,6,.97);display:flex;align-items:center;justify-content:center;padding:16px}
 .ov .box{width:100%;max-width:320px;text-align:center}
 .ov h2{margin:0 0 12px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;font-size:1rem;color:var(--red)}
@@ -63,6 +63,9 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
 .ov button{width:100%;margin-top:8px}
 .ov .msg{color:var(--mut);font-size:.85rem;min-height:1.2em;margin:8px 0 0}
 .ov code{display:block;word-break:break-all;color:var(--fg);background:rgba(255,255,255,.06);border-radius:8px;padding:8px;margin:6px 0;font-size:.85rem;letter-spacing:0}
+.pic{display:block;max-width:100%;max-height:320px;border-radius:12px;cursor:zoom-in}
+#lb{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.95);display:flex;align-items:center;justify-content:center;cursor:zoom-out}
+#lb img{max-width:96%;max-height:96%;border-radius:8px}
 @media (prefers-reduced-motion:reduce){#bgm,.shake,.opt{animation:none;transition:none}}
 </style>
 </head>
@@ -88,9 +91,11 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
   <div id="cbg" aria-hidden="true"><img id="cbi" alt=""></div>
   <div id="hd"><div id="av">D</div><div class="t"><b>Daryl</b><span id="pst">çevrimdışı</span></div><button id="gear" aria-label="Ayarlar">⚙</button></div>
   <div id="msgs"><div id="empty">Henüz mesaj yok.</div></div>
-  <form id="form"><input id="txt" type="text" maxlength="1000" placeholder="Mesaj yaz…" autocomplete="off" aria-label="Mesaj"><button type="button" id="mic" aria-label="Sesli mesaj kaydet">🎤</button><button class="p" id="sd">Gönder</button></form>
+  <form id="form"><input id="txt" type="text" maxlength="1000" placeholder="Mesaj yaz…" autocomplete="off" aria-label="Mesaj"><button type="button" id="pic" aria-label="Fotoğraf gönder">🖼</button><button type="button" id="mic" aria-label="Sesli mesaj kaydet">🎤</button><input id="pf" type="file" accept="image/*" hidden><button class="p" id="sd">Gönder</button></form>
   <div id="recbar" hidden><span id="rt">● 0:00</span><button type="button" id="rcx">İptal</button><button type="button" class="p" id="rok">Gönder</button></div>
 </div>
+
+<div id="lb" hidden><img id="lbi" alt=""></div>
 
 <div id="set" class="ov" hidden>
   <div class="box">
@@ -99,6 +104,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
     <button class="p" id="pinsave">PIN kaydet (4-6 rakam)</button>
     <button id="pinrm">PIN'i kaldır</button>
     <button id="lknow">Şimdi kilitle</button>
+    <button id="out">Çıkış yap</button>
     <button id="sclose">Kapat</button>
     <p class="msg" id="smsg"></p>
     <p class="msg">Cihaz kodun (başka cihazda kullanmak için, kimseyle paylaşma):</p>
@@ -119,9 +125,10 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
 (function(){
 var $=function(i){return document.getElementById(i)};
 function ls(k,v){try{if(v===undefined)return localStorage.getItem(k);if(v===null)localStorage.removeItem(k);else localStorage.setItem(k,v)}catch(e){}return null}
+function ss(k,v){try{if(v===undefined)return sessionStorage.getItem(k);if(v===null)sessionStorage.removeItem(k);else sessionStorage.setItem(k,v)}catch(e){}return null}
 function rnd(n){var b=new Uint8Array(n),s="";crypto.getRandomValues(b);for(var i=0;i<n;i++)s+=("0"+b[i].toString(16)).slice(-2);return s}
 var cid=ls("cid");if(!cid||!/^[a-z0-9]{8,32}$/.test(cid)){cid=rnd(8);ls("cid",cid)}
-var token=ls("tk"),ws,me=0,ticks={},locked=false,unreadN=0,hiddenAt=0,pinH=ls("pinh"),pinS=ls("pins"),chatBgDone=false;
+ls("tk",null);var token=ss("tk"),ws,me=0,ticks={},locked=false,unreadN=0,hiddenAt=0,pinH=ls("pinh"),pinS=ls("pins"),chatBgDone=false;
 
 function tryImgs(el,list,done){
  var i=0;function next(){if(i>=list.length){el.remove();return}el.src=list[i++]}
@@ -139,18 +146,19 @@ function showApp(on){$("app").hidden=!on;$("enter").hidden=on;$("bgm").hidden=on
 function send(o){if(ws&&ws.readyState===1)ws.send(JSON.stringify(o))}
 
 // --- sorular ---
-var qs=[],qi=0,ans=[];
+var qs=[],qi=0,ans=[],qready=false;
 function loadQuiz(){
  $("qq").textContent="Yükleniyor…";$("qo").innerHTML="";
  fetch("/api/quiz").then(function(r){return r.json()}).then(function(j){qs=j.qs;qi=0;ans=[];renderQ()})
   .catch(function(){$("qq").textContent="Bağlanılamadı. Sayfayı yenile."});
 }
 function renderQ(){
+ qready=false;setTimeout(function(){qready=true},500);
  var q=qs[qi];$("qn").textContent=(qi+1)+" / "+qs.length;$("qq").textContent=q.q;
  var box=$("qo");box.innerHTML="";
  q.o.forEach(function(o){
   var b=document.createElement("button");b.className="opt";b.textContent=o;
-  b.onclick=function(){ans.push(o);qi++;if(qi<qs.length)renderQ();else submit()};
+  b.onclick=function(){if(!qready)return;qready=false;ans.push(o);qi++;if(qi<qs.length)renderQ();else submit()};
   box.appendChild(b);
  });
 }
@@ -158,7 +166,7 @@ function submit(){
  $("qo").innerHTML="";$("qq").textContent="…";
  fetch("/api/enter",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ans:ans,cid:cid})})
   .then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||"Hata");return j})})
-  .then(function(j){token=j.token;ls("tk",token);$("err").textContent="";showApp(true);connect()})
+  .then(function(j){token=j.token;ss("tk",token);$("err").textContent="";showApp(true);connect()})
   .catch(function(e){
    $("err").textContent=e.message;
    var c=$("qcard");c.classList.remove("shake");void c.offsetWidth;c.classList.add("shake");
@@ -183,7 +191,7 @@ function connect(){
    me=m.me;$("msgs").innerHTML="";ticks={};
    if(!m.msgs.length)emptyNote();
    m.msgs.forEach(addMsg);showApp(true);markRead();
-  }else if(m.t==="bad"){token=null;ls("tk",null);showApp(false);loadQuiz();$("err").textContent="Oturum bitti, soruları tekrar cevapla"}
+  }else if(m.t==="bad"){token=null;ss("tk",null);showApp(false);loadQuiz();$("err").textContent="Oturum bitti, soruları tekrar cevapla"}
   else if(m.t==="p"){$("pst").textContent=m.other?"çevrimiçi":"çevrimdışı";$("pst").className=m.other?"on":""}
   else if(m.t==="msg"){
    var em=$("empty");if(em)em.remove();
@@ -208,6 +216,12 @@ function addMsg(x){
  if(x.k==="a"){
   var a=document.createElement("audio");a.controls=true;a.preload="metadata";
   a.src="/a/"+x.a+"?t="+encodeURIComponent(token);d.appendChild(a);
+ }else if(x.k==="i"){
+  var im=document.createElement("img");im.className="pic";im.loading="lazy";im.alt="Fotoğraf";
+  im.src="/a/"+x.a+"?t="+encodeURIComponent(token);
+  im.onclick=function(){$("lbi").src=im.src;$("lb").hidden=false};
+  im.onload=function(){$("msgs").scrollTop=$("msgs").scrollHeight};
+  d.appendChild(im);
  }else d.appendChild(document.createTextNode(x.x));
  var s=document.createElement("small");
  s.textContent=new Date(x.s).toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit"});
@@ -220,6 +234,36 @@ function addMsg(x){
 $("form").onsubmit=function(e){
  e.preventDefault();var t=$("txt").value.trim();if(!t)return;
  send({t:"msg",kind:"text",text:t});$("txt").value="";
+};
+
+// --- fotoğraf ---
+$("lb").onclick=function(){$("lb").hidden=true;$("lbi").removeAttribute("src")};
+function prep(file){
+ return new Promise(function(res,rej){
+  if(file.type==="image/gif"){
+   if(file.size<=2500000)res(file);else rej(new Error("GIF 2,5 MB'dan küçük olmalı"));return;
+  }
+  var url=URL.createObjectURL(file),im=new Image();
+  im.onload=function(){
+   var s=Math.min(1,1280/Math.max(im.width,im.height)),w=Math.round(im.width*s),h=Math.round(im.height*s);
+   var c=document.createElement("canvas");c.width=w;c.height=h;c.getContext("2d").drawImage(im,0,0,w,h);
+   URL.revokeObjectURL(url);
+   c.toBlob(function(b){b?res(b):rej(new Error("Fotoğraf işlenemedi"))},"image/jpeg",0.82);
+  };
+  im.onerror=function(){URL.revokeObjectURL(url);rej(new Error("Bu fotoğraf okunamadı"))};
+  im.src=url;
+ });
+}
+$("pic").onclick=function(){$("pf").click()};
+$("pf").onchange=function(){
+ var f=this.files[0];this.value="";if(!f)return;
+ $("pic").disabled=true;
+ prep(f).then(function(b){
+  return fetch("/api/up?t="+encodeURIComponent(token),{method:"POST",headers:{"Content-Type":b.type},body:b});
+ }).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||"Hata");return j})})
+  .then(function(j){send({t:"msg",kind:"image",aid:j.id})})
+  .catch(function(e){alert("Fotoğraf gönderilemedi: "+e.message)})
+  .then(function(){$("pic").disabled=false});
 };
 
 // --- sesli mesaj ---
@@ -253,7 +297,7 @@ function onRecStop(){
  if(!recSend||dur<1)return;
  var type=(rec.mimeType||"audio/webm").split(";")[0],blob=new Blob(chunks,{type:type});
  if(blob.size>1300000){alert("Kayıt çok uzun.");return}
- fetch("/api/audio?t="+encodeURIComponent(token),{method:"POST",headers:{"Content-Type":type},body:blob})
+ fetch("/api/up?t="+encodeURIComponent(token),{method:"POST",headers:{"Content-Type":type},body:blob})
   .then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||"Hata");return j})})
   .then(function(j){send({t:"msg",kind:"audio",aid:j.id,dur:dur})})
   .catch(function(e){alert("Ses gönderilemedi: "+e.message)});
@@ -276,6 +320,7 @@ $("lgo").onclick=unlock;
 $("lp").onkeydown=function(e){if(e.key==="Enter")unlock()};
 $("gear").onclick=function(){$("smsg").textContent=pinH?"Uygulama kilidi açık.":"Uygulama kilidi kapalı.";$("np").value="";$("mycid").textContent=cid;$("set").hidden=false};
 $("sclose").onclick=function(){$("set").hidden=true};
+$("out").onclick=function(){ss("tk",null);location.reload()};
 $("pinsave").onclick=function(){
  var p=$("np").value;
  if(!/^\d{4,6}$/.test(p)){$("smsg").textContent="PIN 4-6 rakam olmalı.";return}

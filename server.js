@@ -61,19 +61,22 @@ function dropAudio(id) {
 }
 function trim() {
   while (db.msgs.length > 2000) { const o = db.msgs.shift(); if (o.a) dropAudio(o.a); }
-  let n = db.msgs.filter(x => x.a).length;
-  for (const x of db.msgs) {
-    if (n <= 400) break;
-    if (x.a) { dropAudio(x.a); x.a = null; x.k = "t"; x.x = "🎤 (eski ses mesajı silindi)"; n--; }
+  for (const [k, cap, label] of [["a", 400, "eski ses mesajı"], ["i", 300, "eski fotoğraf"]]) {
+    let n = db.msgs.filter(x => x.k === k && x.a).length;
+    for (const x of db.msgs) {
+      if (n <= cap) break;
+      if (x.k === k && x.a) { dropAudio(x.a); x.a = null; x.k = "t"; x.x = "(" + label + " silindi)"; n--; }
+    }
   }
 }
 
 // ---- Yardımcılar ----
 const TYPES = { ".html": "text/html; charset=utf-8", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp", ".mp4": "video/mp4", ".webm": "video/webm" };
 const AUDIO_OK = ["audio/webm", "audio/mp4", "audio/ogg", "audio/mpeg", "audio/aac", "audio/x-m4a"];
+const IMG_OK = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const clamp = (s, n) => String(s || "").slice(0, n);
 const sig = s => crypto.createHmac("sha256", db.secret).update(s).digest("hex").slice(0, 32);
-const mkToken = cid => { const p = cid + "." + (Date.now() + 90 * 864e5); return p + "." + sig(p); };
+const mkToken = cid => { const p = cid + "." + (Date.now() + 864e5); return p + "." + sig(p); };
 function sess(t) {
   if (typeof t !== "string") return null;
   const a = t.split(".");
@@ -93,6 +96,7 @@ function addFail(ip) {
 const json = (res, code, o) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
 function readBody(req, cb) {
   let b = "";
+  req.setEncoding("utf8");
   req.on("data", d => { b += d; if (b.length > 2000) req.destroy(); });
   req.on("end", () => { try { cb(JSON.parse(b)); } catch (e) { cb(null); } });
 }
@@ -132,15 +136,16 @@ const server = http.createServer((req, res) => {
     return json(res, 200, { qs: QUIZ.map(x => ({ q: x.q, o: shuffle(x.o) })) });
   }
   if (req.method === "POST") {
-    if (url === "/api/audio") {
+    if (url === "/api/up") {
       const s = sess(q.get("t"));
       if (!s) return json(res, 401, { error: "Giriş gerekli" });
       const mime = (req.headers["content-type"] || "").split(";")[0].trim();
-      if (!AUDIO_OK.includes(mime)) return json(res, 400, { error: "Ses biçimi desteklenmiyor" });
+      const max = AUDIO_OK.includes(mime) ? 1300000 : IMG_OK.includes(mime) ? 3500000 : 0;
+      if (!max) return json(res, 400, { error: "Dosya biçimi desteklenmiyor" });
       const chunks = []; let n = 0, bad = false;
-      req.on("data", d => { n += d.length; if (n > 1300000) { bad = true; req.destroy(); } else chunks.push(d); });
+      req.on("data", d => { n += d.length; if (n > max) { bad = true; req.destroy(); } else chunks.push(d); });
       req.on("end", async () => {
-        if (bad || !n) return json(res, 400, { error: "Ses çok büyük veya boş" });
+        if (bad || !n) return json(res, 400, { error: "Dosya çok büyük veya boş" });
         const id = crypto.randomBytes(12).toString("hex");
         try { await putBlob(id, mime, Buffer.concat(chunks)); } catch (e) { return json(res, 500, { error: "Kaydedilemedi" }); }
         db.audios[id] = mime; save();
@@ -209,9 +214,11 @@ wss.on("connection", ws => {
 
     if (m.t === "msg") {
       const x = { i: ++db.seq, f: ws.idx, s: now, r: 0 };
-      if (m.kind === "audio") {
-        if (typeof m.aid !== "string" || !db.audios[m.aid]) return;
-        x.k = "a"; x.a = m.aid; x.d = Math.max(0, Math.min(60, +m.dur || 0));
+      if (m.kind === "audio" || m.kind === "image") {
+        const mt = typeof m.aid === "string" ? db.audios[m.aid] : null;
+        if (typeof mt !== "string" || !mt.startsWith(m.kind === "audio" ? "audio/" : "image/")) return;
+        x.k = m.kind === "audio" ? "a" : "i"; x.a = m.aid;
+        if (x.k === "a") x.d = Math.max(0, Math.min(60, +m.dur || 0));
       } else {
         const text = clamp(m.text, 1000).trim();
         if (!text) return;
