@@ -4,7 +4,10 @@ const { WebSocketServer } = require("ws");
 const PUB = path.join(__dirname, "public");
 const DATA = process.env.DATA_DIR || __dirname;
 const DB_FILE = path.join(DATA, "data.json"), AUD = path.join(DATA, "audio");
-let pool = null;
+const VERSION = "4.0";
+const NAMES = ["Stannis", "Harry"];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let pool = null, lastDbError = "";
 
 // ---- Sorular (cevaplar sadece sunucuda durur) ----
 const QUIZ = [
@@ -15,48 +18,69 @@ const QUIZ = [
 const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = crypto.randomInt(i + 1); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
 // ---- Kayıt (Postgres varsa orada, yoksa dosyada) ----
-let db = { members: [], msgs: [], seq: 0, audios: {}, secret: "" };
-let timer = null;
-function flush() {
-  const s = JSON.stringify(db);
-  if (pool) pool.query("INSERT INTO kv(k,v) VALUES('state',$1) ON CONFLICT(k) DO UPDATE SET v=EXCLUDED.v", [s]).catch(e => console.log("Kayit hatasi:", e.message));
-  else fs.writeFile(DB_FILE, s, () => {});
+let db = { members: [], who: {}, msgs: [], seq: 0, audios: {}, secret: "" };
+let timer = null, chain = Promise.resolve();
+const UPSERT = "INSERT INTO kv(k,v) VALUES('state',$1) ON CONFLICT(k) DO UPDATE SET v=EXCLUDED.v";
+async function pq(sql, params) {            // başarısız olursa birkaç kez yeniden dener
+  for (let i = 0; ; i++) {
+    try { const r = await pool.query(sql, params); lastDbError = ""; return r; }
+    catch (e) { lastDbError = String(e.message).slice(0, 120); if (i >= 3) throw e; await sleep(700 * (i + 1)); }
+  }
 }
+async function doFlush() {
+  const s = JSON.stringify(db);
+  try {
+    if (pool) await pq(UPSERT, [s]);
+    else await fs.promises.writeFile(DB_FILE, s);
+  } catch (e) { console.log("Kayit hatasi:", e.message); clearTimeout(timer); timer = setTimeout(flush, 5000); }
+}
+const flush = () => (chain = chain.then(doFlush));
 function save() { clearTimeout(timer); timer = setTimeout(flush, 400); }
+const nameList = () => [0, 1].map(i => db.who[db.members[i]] || null);
+
+async function connectDb() {
+  const { Pool } = require("pg");
+  pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 3, idleTimeoutMillis: 20000, connectionTimeoutMillis: 15000, keepAlive: true });
+  pool.on("error", () => {});
+  await pq("CREATE TABLE IF NOT EXISTS kv(k text PRIMARY KEY, v jsonb NOT NULL)");
+  await pq("CREATE TABLE IF NOT EXISTS blobs(id text PRIMARY KEY, mime text NOT NULL, data bytea NOT NULL)");
+  const r = await pq("SELECT v FROM kv WHERE k='state'");
+  if (r.rows[0]) db = Object.assign(db, r.rows[0].v);
+}
 async function init() {
   if (process.env.DATABASE_URL) {
-    try {
-      const { Pool } = require("pg");
-      pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 3 });
-      pool.on("error", () => {});
-      await pool.query("CREATE TABLE IF NOT EXISTS kv(k text PRIMARY KEY, v jsonb NOT NULL)");
-      await pool.query("CREATE TABLE IF NOT EXISTS blobs(id text PRIMARY KEY, mime text NOT NULL, data bytea NOT NULL)");
-      const r = await pool.query("SELECT v FROM kv WHERE k='state'");
-      if (r.rows[0]) db = Object.assign(db, r.rows[0].v);
-      console.log("Veritabani bagli");
-    } catch (e) { console.log("DB baglanamadi, dosyaya donuluyor:", e.message); pool = null; }
-  }
+    for (let i = 0; i < 4; i++) {
+      try { await connectDb(); console.log("Veritabani bagli"); break; }
+      catch (e) {
+        console.log("DB baglanamadi (deneme " + (i + 1) + "):", e.message);
+        lastDbError = String(e.message).slice(0, 120);
+        try { await pool.end(); } catch (x) {}
+        pool = null; await sleep(3000);
+      }
+    }
+  } else lastDbError = "DATABASE_URL tanımlı değil";
   if (!pool) {
     fs.mkdirSync(AUD, { recursive: true });
     try { db = Object.assign(db, JSON.parse(fs.readFileSync(DB_FILE, "utf8"))); } catch (e) {}
-    console.log("UYARI: DATABASE_URL yok, kayitlar kalici degil");
+    console.log("UYARI: Veritabani yok, kayitlar kalici degil");
   }
   if (!Array.isArray(db.msgs)) db.msgs = [];
   if (!Array.isArray(db.members)) db.members = [];
+  if (!db.who || typeof db.who !== "object") db.who = {};
   if (!db.audios || typeof db.audios !== "object") db.audios = {};
   if (!db.secret) { db.secret = crypto.randomBytes(32).toString("hex"); save(); }
 }
 async function putBlob(id, mime, buf) {
-  if (pool) await pool.query("INSERT INTO blobs(id,mime,data) VALUES($1,$2,$3)", [id, mime, buf]);
+  if (pool) await pq("INSERT INTO blobs(id,mime,data) VALUES($1,$2,$3)", [id, mime, buf]);
   else await fs.promises.writeFile(path.join(AUD, id), buf);
 }
 async function getBlob(id) {
-  if (pool) { const r = await pool.query("SELECT mime,data FROM blobs WHERE id=$1", [id]); return r.rows[0] || null; }
+  if (pool) { const r = await pq("SELECT mime,data FROM blobs WHERE id=$1", [id]); return r.rows[0] || null; }
   try { return { mime: db.audios[id], data: await fs.promises.readFile(path.join(AUD, id)) }; } catch (e) { return null; }
 }
 function dropAudio(id) {
   delete db.audios[id];
-  if (pool) pool.query("DELETE FROM blobs WHERE id=$1", [id]).catch(() => {});
+  if (pool) pq("DELETE FROM blobs WHERE id=$1", [id]).catch(() => {});
   else fs.unlink(path.join(AUD, id), () => {});
 }
 function trim() {
@@ -71,12 +95,12 @@ function trim() {
 }
 
 // ---- Yardımcılar ----
-const TYPES = { ".html": "text/html; charset=utf-8", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp", ".mp4": "video/mp4", ".webm": "video/webm" };
+const TYPES = { ".html": "text/html; charset=utf-8", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp", ".mp4": "video/mp4", ".webm": "video/webm", ".js": "text/javascript; charset=utf-8", ".json": "application/manifest+json" };
 const AUDIO_OK = ["audio/webm", "audio/mp4", "audio/ogg", "audio/mpeg", "audio/aac", "audio/x-m4a"];
 const IMG_OK = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const clamp = (s, n) => String(s || "").slice(0, n);
 const sig = s => crypto.createHmac("sha256", db.secret).update(s).digest("hex").slice(0, 32);
-const mkToken = cid => { const p = cid + "." + (Date.now() + 864e5); return p + "." + sig(p); };
+const mkToken = cid => { const p = cid + "." + (Date.now() + 36e5); return p + "." + sig(p); };
 function sess(t) {
   if (typeof t !== "string") return null;
   const a = t.split(".");
@@ -84,7 +108,7 @@ function sess(t) {
   const good = Buffer.from(sig(a[0] + "." + a[1])), got = Buffer.from(a[2]);
   if (good.length !== got.length || !crypto.timingSafeEqual(good, got) || +a[1] < Date.now()) return null;
   const i = db.members.indexOf(a[0]);
-  return i < 0 ? null : { cid: a[0], idx: i };
+  return i < 0 ? null : { cid: a[0], idx: i, exp: +a[1] };
 }
 const fails = new Map();
 const failed = ip => { const t = fails.get(ip); return t && Date.now() < t.reset && t.n >= 6; };
@@ -117,7 +141,7 @@ function sendBuf(req, res, buf, type, cache) {
 }
 function sendFile(req, res, f, type, cache) {
   fs.stat(f, (e, s) => {
-    if (e || !s.isFile()) { res.writeHead(404); return res.end("Yok"); }
+    if (e || !s.isFile()) { res.writeHead(404, { "Cache-Control": "public, max-age=120" }); return res.end("Yok"); }
     const h = { "Content-Type": type, "Accept-Ranges": "bytes", "Cache-Control": cache };
     const r = req.headers.range ? parseRange(req.headers.range, s.size) : null;
     if (r === "bad") { res.writeHead(416, { "Content-Range": "bytes */" + s.size }); return res.end(); }
@@ -158,11 +182,17 @@ const server = http.createServer((req, res) => {
         if (!body) return json(res, 400, { error: "Geçersiz istek" });
         if (failed(ip)) return json(res, 429, { error: "Çok fazla yanlış deneme. 15 dakika sonra tekrar dene." });
         const ans = Array.isArray(body.ans) ? body.ans : [], cid = clamp(body.cid, 32);
-        if (!QUIZ.every((x, i) => ans[i] === x.a)) { addFail(ip); return json(res, 401, { error: "Yanlış cevap" }); }
+        if (!QUIZ.every((x, i) => ans[i] === x.a)) { addFail(ip); return json(res, 401, { error: "Sikildin ve atıldın." }); }
         if (!/^[a-z0-9]{8,32}$/.test(cid)) return json(res, 400, { error: "Geçersiz istek" });
-        if (!db.members.includes(cid)) {
-          if (db.members.length >= 2) return json(res, 403, { error: "Bu sohbet dolu" });
-          db.members.push(cid); save();
+        const isMember = db.members.includes(cid);
+        if (!isMember && db.members.length >= 2) return json(res, 403, { error: "Bu sohbet dolu." });
+        if (!db.who[cid]) {
+          const taken = Object.values(db.who), free = NAMES.filter(n => !taken.includes(n));
+          const pick = clamp(body.who, 12);
+          if (!NAMES.includes(pick)) return json(res, 200, { need: "who", free });
+          if (!free.includes(pick)) return json(res, 409, { error: "Bu kişi zaten seçilmiş." });
+          if (!isMember) db.members.push(cid);
+          db.who[cid] = pick; save(); broadcast({ t: "names", names: nameList() });
         }
         json(res, 200, { token: mkToken(cid) });
       });
@@ -183,7 +213,7 @@ const server = http.createServer((req, res) => {
   const f = path.join(PUB, path.normalize(p));
   const type = TYPES[path.extname(f).toLowerCase()];
   if (!f.startsWith(PUB) || !type) { res.writeHead(404); return res.end("Bulunamadi"); }
-  sendFile(req, res, f, type, type.startsWith("text/html") ? "no-cache" : "public, max-age=3600");
+  sendFile(req, res, f, type, type.startsWith("text/") || type.includes("json") ? "no-cache" : "public, max-age=3600");
 });
 
 // ---- WebSocket ----
@@ -201,8 +231,9 @@ wss.on("connection", ws => {
     if (!ws.cid) {
       const s = m.t === "auth" ? sess(m.token) : null;
       if (s) {
-        ws.cid = s.cid; ws.idx = s.idx; online.add(ws);
-        send(ws, { t: "ready", me: ws.idx, msgs: db.msgs.slice(-100) });
+        ws.cid = s.cid; ws.idx = s.idx; ws.exp = s.exp; online.add(ws);
+        const mine = db.msgs.filter(x => !(x.h && x.h.includes(ws.idx))).slice(-100).map(x => { const { h, ...y } = x; return y; });
+        send(ws, { t: "ready", v: VERSION, me: ws.idx, names: nameList(), store: pool ? "db" : "file", dberr: lastDbError, msgs: mine });
         presence();
       } else { send(ws, { t: "bad" }); ws.close(); }
       return;
@@ -230,6 +261,20 @@ wss.on("connection", ws => {
       const ids = [];
       db.msgs.forEach(x => { if (x.f !== ws.idx && !x.r) { x.r = 1; ids.push(x.i); } });
       if (ids.length) { save(); broadcast({ t: "read", ids }); }
+    } else if (m.t === "del") {
+      const j = db.msgs.findIndex(y => y.i === +m.id), x = db.msgs[j];
+      if (!x) return;
+      if (m.mode === "all") {
+        if (x.f !== ws.idx || x.del) return;
+        if (x.a) dropAudio(x.a);
+        x.a = null; x.k = "t"; x.x = "Bu mesaj silindi."; x.del = 1; delete x.d;
+        save(); const { h, ...y } = x; broadcast({ t: "upd", m: y });
+      } else if (m.mode === "me") {
+        x.h = x.h || [];
+        if (!x.h.includes(ws.idx)) x.h.push(ws.idx);
+        if (x.h.length >= 2) { if (x.a) dropAudio(x.a); db.msgs.splice(j, 1); }
+        save(); online.forEach(w => { if (w.cid === ws.cid) send(w, { t: "gone", id: x.i }); });
+      }
     }
   });
   ws.on("close", () => { online.delete(ws); presence(); });
@@ -237,8 +282,9 @@ wss.on("connection", ws => {
 
 setInterval(() => {
   wss.clients.forEach(w => { if (!w.alive) return w.terminate(); w.alive = false; w.ping(); });
+  online.forEach(w => { if (w.exp < Date.now()) { send(w, { t: "expired" }); w.close(); } });
 }, 30000);
 
-process.on("SIGTERM", () => { clearTimeout(timer); flush(); setTimeout(() => process.exit(0), 1000); });
+process.on("SIGTERM", async () => { clearTimeout(timer); setTimeout(() => process.exit(0), 8000); await flush(); process.exit(0); });
 
 init().then(() => server.listen(process.env.PORT || 3000, () => console.log("Hazir")));
