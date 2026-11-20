@@ -4,7 +4,7 @@ const { WebSocketServer } = require("ws");
 const PUB = path.join(__dirname, "public");
 const DATA = process.env.DATA_DIR || __dirname;
 const DB_FILE = path.join(DATA, "data.json"), AUD = path.join(DATA, "audio");
-const VERSION = "4.0";
+const VERSION = "5.0";
 const NAMES = ["Stannis", "Harry"];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let pool = null, lastDbError = "";
@@ -18,7 +18,7 @@ const QUIZ = [
 const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = crypto.randomInt(i + 1); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
 // ---- Kayıt (Postgres varsa orada, yoksa dosyada) ----
-let db = { members: [], who: {}, msgs: [], seq: 0, audios: {}, secret: "" };
+let db = { members: [], who: {}, devs: {}, pins: {}, ntok: {}, win: null, v: 0, msgs: [], seq: 0, audios: {}, secret: "" };
 let timer = null, chain = Promise.resolve();
 const UPSERT = "INSERT INTO kv(k,v) VALUES('state',$1) ON CONFLICT(k) DO UPDATE SET v=EXCLUDED.v";
 async function pq(sql, params) {            // başarısız olursa birkaç kez yeniden dener
@@ -36,7 +36,7 @@ async function doFlush() {
 }
 const flush = () => (chain = chain.then(doFlush));
 function save() { clearTimeout(timer); timer = setTimeout(flush, 400); }
-const nameList = () => [0, 1].map(i => db.who[db.members[i]] || null);
+const nameList = () => NAMES;
 
 async function connectDb() {
   const { Pool } = require("pg");
@@ -67,6 +67,16 @@ async function init() {
   if (!Array.isArray(db.msgs)) db.msgs = [];
   if (!Array.isArray(db.members)) db.members = [];
   if (!db.who || typeof db.who !== "object") db.who = {};
+  for (const k of ["devs", "pins", "ntok"]) if (!db[k] || typeof db[k] !== "object") db[k] = {};
+  if (db.v !== 5) {   // eski sürümden geçiş: cihaz sırası yerine kişi sırası (Stannis=0, Harry=1)
+    const map = db.members.map(c => NAMES.indexOf(db.who[c]));
+    db.members.forEach(c => { if (NAMES.includes(db.who[c])) db.devs[c] = db.who[c]; });
+    db.msgs.forEach(x => {
+      if (map[x.f] >= 0) x.f = map[x.f];
+      if (x.h) x.h = x.h.map(i => (map[i] >= 0 ? map[i] : i));
+    });
+    db.v = 5; save();
+  }
   if (!db.audios || typeof db.audios !== "object") db.audios = {};
   if (!db.secret) { db.secret = crypto.randomBytes(32).toString("hex"); save(); }
 }
@@ -100,15 +110,19 @@ const AUDIO_OK = ["audio/webm", "audio/mp4", "audio/ogg", "audio/mpeg", "audio/a
 const IMG_OK = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const clamp = (s, n) => String(s || "").slice(0, n);
 const sig = s => crypto.createHmac("sha256", db.secret).update(s).digest("hex").slice(0, 32);
-const mkToken = cid => { const p = cid + "." + (Date.now() + 36e5); return p + "." + sig(p); };
+const hashPin = (pin, salt) => crypto.scryptSync(pin, salt, 32).toString("hex");
+const pinOk = (p, pin) => { const a = Buffer.from(hashPin(pin, p.salt)), b = Buffer.from(p.hash); return a.length === b.length && crypto.timingSafeEqual(a, b); };
+function newWin() { return (db.win = { id: crypto.randomBytes(6).toString("hex"), end: Date.now() + 36e5 }); }
+const mkToken = name => { const p = name + "." + db.win.id + "." + db.win.end; return p + "." + sig(p); };
 function sess(t) {
   if (typeof t !== "string") return null;
   const a = t.split(".");
-  if (a.length !== 3) return null;
-  const good = Buffer.from(sig(a[0] + "." + a[1])), got = Buffer.from(a[2]);
-  if (good.length !== got.length || !crypto.timingSafeEqual(good, got) || +a[1] < Date.now()) return null;
-  const i = db.members.indexOf(a[0]);
-  return i < 0 ? null : { cid: a[0], idx: i, exp: +a[1] };
+  if (a.length !== 4) return null;
+  const good = Buffer.from(sig(a.slice(0, 3).join("."))), got = Buffer.from(a[3]);
+  if (good.length !== got.length || !crypto.timingSafeEqual(good, got)) return null;
+  if (!db.win || a[1] !== db.win.id || Date.now() >= db.win.end) return null;
+  const idx = NAMES.indexOf(a[0]);
+  return idx < 0 ? null : { name: a[0], idx, exp: db.win.end };
 }
 const fails = new Map();
 const failed = ip => { const t = fails.get(ip); return t && Date.now() < t.reset && t.n >= 6; };
@@ -150,6 +164,18 @@ function sendFile(req, res, f, type, cache) {
   });
 }
 
+// ---- Bildirim yoklaması ve toplu çıkış ----
+const pollers = new Set();
+function answerPoll(p) {
+  if (p.done) return;
+  p.done = true; clearTimeout(p.t); pollers.delete(p);
+  const items = db.msgs.filter(x => x.i > p.since && x.f !== p.idx && !(x.h && x.h.includes(p.idx))).map(x => ({ from: NAMES[x.f] }));
+  json(p.res, 200, { last: db.seq, items });
+}
+function expireStale() {
+  online.forEach(w => { if (!db.win || w.exp !== db.win.end || Date.now() >= db.win.end) { send(w, { t: "expired" }); w.close(); } });
+}
+
 // ---- HTTP ----
 const server = http.createServer((req, res) => {
   let u; try { u = new URL(req.url, "http://x"); } catch (e) { res.writeHead(400); return res.end(); }
@@ -159,7 +185,38 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && url === "/api/quiz") {
     return json(res, 200, { qs: QUIZ.map(x => ({ q: x.q, o: shuffle(x.o) })) });
   }
+  if (req.method === "GET" && url === "/api/poll") {
+    const n = db.ntok[q.get("d")];
+    if (!n) return json(res, 401, { error: "Geçersiz" });
+    const p = { res, idx: NAMES.indexOf(n.name), since: +q.get("since") || 0, done: false };
+    if (db.msgs.some(x => x.i > p.since && x.f !== p.idx && !(x.h && x.h.includes(p.idx)))) return answerPoll(p);
+    p.t = setTimeout(() => answerPoll(p), 25000);
+    pollers.add(p);
+    res.on("close", () => { p.done = true; clearTimeout(p.t); pollers.delete(p); });
+    return;
+  }
   if (req.method === "POST") {
+    if (url === "/api/devtoken") {
+      const s = sess(q.get("t"));
+      if (!s) return json(res, 401, { error: "Giriş gerekli" });
+      return readBody(req, body => {
+        const cid = clamp(body && body.cid, 32);
+        let tok = Object.keys(db.ntok).find(k => db.ntok[k].cid === cid && db.ntok[k].name === s.name);
+        if (!tok) {
+          tok = crypto.randomBytes(20).toString("hex");
+          db.ntok[tok] = { name: s.name, cid };
+          const ks = Object.keys(db.ntok); if (ks.length > 8) delete db.ntok[ks[0]];
+          save();
+        }
+        json(res, 200, { token: tok, last: db.seq });
+      });
+    }
+    if (url === "/api/logoutall") {
+      const s = sess(q.get("t"));
+      if (!s) return json(res, 401, { error: "Giriş gerekli" });
+      db.win.end = Date.now(); db.ntok = {}; save(); expireStale();
+      return json(res, 200, {});
+    }
     if (url === "/api/up") {
       const s = sess(q.get("t"));
       if (!s) return json(res, 401, { error: "Giriş gerekli" });
@@ -181,20 +238,30 @@ const server = http.createServer((req, res) => {
       return readBody(req, body => {
         if (!body) return json(res, 400, { error: "Geçersiz istek" });
         if (failed(ip)) return json(res, 429, { error: "Çok fazla yanlış deneme. 15 dakika sonra tekrar dene." });
-        const ans = Array.isArray(body.ans) ? body.ans : [], cid = clamp(body.cid, 32);
+        const ans = Array.isArray(body.ans) ? body.ans : [], cid = clamp(body.cid, 32), who = clamp(body.who, 12), pin = clamp(body.pin, 12);
         if (!QUIZ.every((x, i) => ans[i] === x.a)) { addFail(ip); return json(res, 401, { error: "Sikildin ve atıldın." }); }
         if (!/^[a-z0-9]{8,32}$/.test(cid)) return json(res, 400, { error: "Geçersiz istek" });
-        const isMember = db.members.includes(cid);
-        if (!isMember && db.members.length >= 2) return json(res, 403, { error: "Bu sohbet dolu." });
-        if (!db.who[cid]) {
-          const taken = Object.values(db.who), free = NAMES.filter(n => !taken.includes(n));
-          const pick = clamp(body.who, 12);
-          if (!NAMES.includes(pick)) return json(res, 200, { need: "who", free });
-          if (!free.includes(pick)) return json(res, 409, { error: "Bu kişi zaten seçilmiş." });
-          if (!isMember) db.members.push(cid);
-          db.who[cid] = pick; save(); broadcast({ t: "names", names: nameList() });
+        const okPin = /^\d{4,8}$/.test(pin);
+        const setPin = n => { const salt = crypto.randomBytes(8).toString("hex"); db.pins[n] = { salt, hash: hashPin(pin, salt) }; };
+        let name = db.devs[cid];
+        if (!name) {                                     // yeni cihaz: kişi ve PIN gerekir
+          if (!NAMES.includes(who)) return json(res, 200, { need: "who", names: NAMES });
+          if (!db.pins[who]) {
+            if (Object.values(db.devs).includes(who)) return json(res, 403, { error: "Önce bu kişinin kayıtlı cihazından PIN belirlenmeli." });
+            if (!okPin) return json(res, 200, { need: "setpin", who });
+            setPin(who);
+          } else {
+            if (!okPin) return json(res, 200, { need: "pin", who });
+            if (!pinOk(db.pins[who], pin)) { addFail(ip); return json(res, 422, { error: "PIN yanlış." }); }
+          }
+          db.devs[cid] = name = who;
+        } else if (!db.pins[name]) {                     // kayıtlı cihaz ama PIN henüz yok
+          if (!okPin) return json(res, 200, { need: "setpin", who: name });
+          setPin(name);
         }
-        json(res, 200, { token: mkToken(cid) });
+        if (!db.win || Date.now() >= db.win.end) newWin();
+        save();
+        json(res, 200, { token: mkToken(name) });
       });
     }
     res.writeHead(404); return res.end();
@@ -221,19 +288,19 @@ const wss = new WebSocketServer({ server, maxPayload: 4096 });
 const online = new Set();
 const send = (w, o) => { if (w.readyState === 1) w.send(JSON.stringify(o)); };
 const broadcast = o => online.forEach(w => send(w, o));
-const presence = () => online.forEach(w => send(w, { t: "p", other: [...online].some(o => o.cid !== w.cid) }));
+const presence = () => online.forEach(w => send(w, { t: "p", other: [...online].some(o => o.name !== w.name) }));
 
 wss.on("connection", ws => {
   ws.alive = true; ws.win = [];
   ws.on("pong", () => { ws.alive = true; });
   ws.on("message", raw => {
     let m; try { m = JSON.parse(raw); } catch (e) { return; }
-    if (!ws.cid) {
+    if (!ws.name) {
       const s = m.t === "auth" ? sess(m.token) : null;
       if (s) {
-        ws.cid = s.cid; ws.idx = s.idx; ws.exp = s.exp; online.add(ws);
+        ws.name = s.name; ws.idx = s.idx; ws.exp = s.exp; online.add(ws);
         const mine = db.msgs.filter(x => !(x.h && x.h.includes(ws.idx))).slice(-100).map(x => { const { h, ...y } = x; return y; });
-        send(ws, { t: "ready", v: VERSION, me: ws.idx, names: nameList(), store: pool ? "db" : "file", dberr: lastDbError, msgs: mine });
+        send(ws, { t: "ready", v: VERSION, exp: ws.exp, me: ws.idx, names: nameList(), store: pool ? "db" : "file", dberr: lastDbError, msgs: mine });
         presence();
       } else { send(ws, { t: "bad" }); ws.close(); }
       return;
@@ -257,6 +324,7 @@ wss.on("connection", ws => {
       }
       db.msgs.push(x); trim(); save();
       broadcast({ t: "msg", m: x });
+      pollers.forEach(p => { if (p.idx !== x.f) answerPoll(p); });
     } else if (m.t === "read") {
       const ids = [];
       db.msgs.forEach(x => { if (x.f !== ws.idx && !x.r) { x.r = 1; ids.push(x.i); } });
@@ -273,7 +341,7 @@ wss.on("connection", ws => {
         x.h = x.h || [];
         if (!x.h.includes(ws.idx)) x.h.push(ws.idx);
         if (x.h.length >= 2) { if (x.a) dropAudio(x.a); db.msgs.splice(j, 1); }
-        save(); online.forEach(w => { if (w.cid === ws.cid) send(w, { t: "gone", id: x.i }); });
+        save(); online.forEach(w => { if (w.name === ws.name) send(w, { t: "gone", id: x.i }); });
       }
     }
   });
@@ -282,8 +350,10 @@ wss.on("connection", ws => {
 
 setInterval(() => {
   wss.clients.forEach(w => { if (!w.alive) return w.terminate(); w.alive = false; w.ping(); });
-  online.forEach(w => { if (w.exp < Date.now()) { send(w, { t: "expired" }); w.close(); } });
+  expireStale();
 }, 30000);
+
+setInterval(expireStale, 5000);
 
 process.on("SIGTERM", async () => { clearTimeout(timer); setTimeout(() => process.exit(0), 8000); await flush(); process.exit(0); });
 

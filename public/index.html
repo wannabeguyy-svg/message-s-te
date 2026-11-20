@@ -100,11 +100,6 @@ button.danger{border-color:#8f1d26;color:#ff8f9b}
     <p id="qq">Yükleniyor…</p>
     <div id="qo"></div>
     <p id="err" role="alert"></p>
-    <button class="lnk" id="dcl">Başka cihazdan devam</button>
-    <div id="dcbox" hidden>
-      <input id="dc" type="text" placeholder="Cihaz kodu" autocomplete="off" aria-label="Cihaz kodu">
-      <button id="dcok">Kodu kullan</button>
-    </div>
   </div>
 </div>
 
@@ -131,20 +126,19 @@ button.danger{border-color:#8f1d26;color:#ff8f9b}
 <div id="set" class="ov" hidden>
   <div class="box">
     <h2>Ayarlar</h2>
-    <input id="np" type="password" inputmode="numeric" maxlength="6" placeholder="PIN" autocomplete="off" aria-label="Yeni PIN">
-    <button class="p" id="pinsave">PIN kaydet (4-6 rakam)</button>
-    <button id="pinrm">PIN'i kaldır</button>
+    <input id="np" type="password" inputmode="numeric" maxlength="6" placeholder="Ekran kilidi PIN'i" autocomplete="off" aria-label="Ekran kilidi PIN'i">
+    <button class="p" id="pinsave">Ekran kilidini kaydet (4-6 rakam)</button>
+    <button id="pinrm">Ekran kilidini kaldır</button>
     <button id="lknow">Şimdi kilitle</button>
     <button id="bgpick">Arka plan seç (foto / GIF)</button>
     <button id="bgrm">Varsayılan arka plan</button>
     <input id="bgf" type="file" accept="image/*" hidden>
     <button id="notif">Bildirimleri aç</button>
     <button id="out">Çıkış yap</button>
+    <button id="outall" class="danger">Tüm cihazlardan çıkış</button>
     <button id="sclose">Kapat</button>
     <p class="msg" id="smsg"></p>
     <p class="msg" id="stline"></p>
-    <p class="msg">Cihaz kodun (başka cihazda kullanmak için, kimseyle paylaşma):</p>
-    <code id="mycid"></code>
   </div>
 </div>
 
@@ -212,31 +206,38 @@ function renderQ(){
   box.appendChild(b);
  });
 }
-function submit(who){
+function submit(who,pin){
  $("qo").innerHTML="";$("qq").className="";$("qq").textContent="…";
- fetch("/api/enter",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ans:ans,cid:cid,who:who||""})})
+ fetch("/api/enter",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ans:ans,cid:cid,who:who||"",pin:pin||""})})
   .then(function(r){return r.json().then(function(j){if(!r.ok){var er=new Error(j.error||"Hata");er.status=r.status;throw er}return j})})
   .then(function(j){
-   if(j.need==="who"){askWho(j.free);return}
+   if(j.need==="who"){askWho(j.names);return}
+   if(j.need==="pin"){askPin(j.who,false);return}
+   if(j.need==="setpin"){askPin(j.who,true);return}
    token=j.token;ss("tk",token);$("err").textContent="";showApp(true);connect();
   })
   .catch(function(e){
    var c=$("qcard");c.classList.remove("shake");void c.offsetWidth;c.classList.add("shake");
    if(e.status===401){$("qn").textContent="";$("qq").className="bad";$("qq").textContent=e.message;$("err").textContent="";setTimeout(loadQuiz,2200)}
-   else{$("err").textContent=e.message;setTimeout(loadQuiz,1500)}
+   else if(e.status===422){$("err").textContent=e.message;askPin(who,false)}
+   else{$("err").textContent=e.message;setTimeout(loadQuiz,2500)}
   });
 }
-function askWho(free){
+function askWho(names){
  $("qn").textContent="";$("qq").textContent="Sen kimsin?";
  var box=$("qo");box.innerHTML="";
- free.forEach(function(n){var b=document.createElement("button");b.className="opt";b.textContent=n;b.onclick=function(){submit(n)};box.appendChild(b)});
+ names.forEach(function(n){var b=document.createElement("button");b.className="opt";b.textContent=n;b.onclick=function(){submit(n)};box.appendChild(b)});
 }
-$("dcl").onclick=function(){$("dcbox").hidden=!$("dcbox").hidden};
-$("dcok").onclick=function(){
- var v=$("dc").value.trim().toLowerCase();
- if(!/^[a-z0-9]{8,32}$/.test(v)){$("err").textContent="Geçersiz cihaz kodu";return}
- cid=v;ls("cid",v);$("dc").value="";$("dcbox").hidden=true;$("err").textContent="Kod ayarlandı, soruları cevapla.";
-};
+function askPin(who,setting){
+ $("qn").textContent="";
+ $("qq").textContent=setting?who+", kendine bir PIN belirle (4-8 rakam). Yeni cihazlarda bunu soracağım.":who+", PIN'ini gir.";
+ var box=$("qo");box.innerHTML="";
+ var i=document.createElement("input");i.type="password";i.inputMode="numeric";i.maxLength=8;i.autocomplete="off";i.placeholder="PIN";i.setAttribute("aria-label","PIN");
+ var b=document.createElement("button");b.className="opt";b.textContent="Devam";
+ function go(){var v=i.value.trim();if(!/^\d{4,8}$/.test(v)){$("err").textContent="PIN 4-8 rakam olmalı.";return}$("err").textContent="";submit(who,v)}
+ b.onclick=go;i.onkeydown=function(e){if(e.key==="Enter")go()};
+ box.appendChild(i);box.appendChild(b);i.focus();
+}
 
 // --- bağlantı ---
 function connect(){
@@ -251,9 +252,14 @@ function connect(){
    var w=$("warn");
    if(m.store==="file"){w.hidden=false;w.textContent="Uyarı: Kayıtlar kalıcı değil, veritabanı bağlı değil. "+(m.dberr||"")}else w.hidden=true;
    $("stline").textContent=m.store==="file"?"Kayıt durumu: Geçici, kalıcı değil. "+(m.dberr||""):"Kayıt durumu: Veritabanı bağlı."+(m.dberr?" Son hata: "+m.dberr:"");
+   $("stline").textContent+=" Oturum bitişi: "+new Date(m.exp).toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit"})+".";
    $("msgs").innerHTML="";ticks={};els={};
    if(!m.msgs.length)emptyNote();
    m.msgs.forEach(addMsg);showApp(true);markRead();
+   if(window.Android&&Android.setNotifyToken){
+    fetch("/api/devtoken?t="+encodeURIComponent(token),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cid:cid})})
+     .then(function(r){return r.json()}).then(function(j){if(j.token)Android.setNotifyToken(j.token,String(j.last))}).catch(function(){});
+   }
   }else if(m.t==="bad"){token=null;ss("tk",null);showApp(false);loadQuiz();$("err").textContent="Oturum bitti, soruları tekrar cevapla."}
   else if(m.t==="expired"){token=null;ss("tk",null);try{ws.close()}catch(x){}showApp(false);loadQuiz();$("err").textContent="Süre doldu, soruları tekrar çöz."}
   else if(m.t==="names"){names=m.names;setHeader()}
@@ -331,7 +337,7 @@ $("form").onsubmit=function(e){
  send({t:"msg",kind:"text",text:t});$("txt").value="";
 };
 
-var CV="4.0";
+var CV="5.0";
 function idb(){return new Promise(function(res,rej){var r=indexedDB.open("sohbet",1);r.onupgradeneeded=function(){r.result.createObjectStore("kv")};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}
 function idbGet(k){return idb().then(function(d){return new Promise(function(res,rej){var q=d.transaction("kv").objectStore("kv").get(k);q.onsuccess=function(){res(q.result)};q.onerror=function(){rej(q.error)}})})}
 function idbSet(k,v){return idb().then(function(d){return new Promise(function(res,rej){var t=d.transaction("kv","readwrite");if(v===null)t.objectStore("kv").delete(k);else t.objectStore("kv").put(v,k);t.oncomplete=res;t.onerror=function(){rej(t.error)}})})}
@@ -373,7 +379,7 @@ function pickMime(){
  for(var i=0;i<c.length;i++){if(MediaRecorder.isTypeSupported(c[i]))return c[i]}return "";
 }
 $("mic").onclick=function(){
- if(!navigator.mediaDevices||!window.MediaRecorder){alert("Bu tarayıcı ses kaydını desteklemiyor.");return}
+ if(!navigator.mediaDevices||!window.MediaRecorder){alert("Ses kaydı desteklenmiyor. (mediaDevices: "+!!navigator.mediaDevices+", MediaRecorder: "+!!window.MediaRecorder+", güvenli bağlantı: "+window.isSecureContext+")");return}
  navigator.mediaDevices.getUserMedia({audio:true}).then(function(s){
   recStream=s;chunks=[];var mt=pickMime();
   rec=mt?new MediaRecorder(s,{mimeType:mt}):new MediaRecorder(s);
@@ -385,7 +391,11 @@ $("mic").onclick=function(){
    $("rt").textContent="● "+Math.floor(s/60)+":"+("0"+s%60).slice(-2);
    if(s>=60){recSend=true;rec.stop()}
   },250);
- }).catch(function(){alert("Mikrofon izni verilmedi.")});
+ }).catch(function(e){
+  var n=(e&&e.name)||"bilinmeyen";
+  var t={NotAllowedError:"Mikrofon izni verilmedi veya uygulama izin vermiyor.",NotFoundError:"Mikrofon bulunamadı.",NotReadableError:"Mikrofon başka bir uygulama tarafından kullanılıyor.",SecurityError:"Güvenlik nedeniyle mikrofon açılamadı."}[n]||"Mikrofon açılamadı.";
+  alert(t+" (Hata kodu: "+n+")");
+ });
 };
 function stopRec(sendIt){if(rec&&rec.state==="recording"){recSend=sendIt;rec.stop()}}
 $("rcx").onclick=function(){stopRec(false)};
@@ -418,12 +428,16 @@ function unlock(){
 }
 $("lgo").onclick=unlock;
 $("lp").onkeydown=function(e){if(e.key==="Enter")unlock()};
-$("gear").onclick=function(){$("smsg").textContent=pinH?"Uygulama kilidi açık.":"Uygulama kilidi kapalı.";$("np").value="";$("mycid").textContent=cid;$("set").hidden=false};
+$("gear").onclick=function(){$("smsg").textContent=pinH?"Uygulama kilidi açık.":"Uygulama kilidi kapalı.";$("np").value="";$("set").hidden=false};
 $("sclose").onclick=function(){$("set").hidden=true};
 $("out").onclick=function(){ss("tk",null);location.reload()};
+$("outall").onclick=function(){
+ var t=token;ss("tk",null);
+ fetch("/api/logoutall?t="+encodeURIComponent(t),{method:"POST"}).catch(function(){}).then(function(){location.reload()});
+};
 $("notif").onclick=function(){
  if(!("Notification" in window)){$("smsg").textContent="Bu tarayıcı bildirim desteklemiyor. iPhone'da siteyi ana ekrana ekleyip oradan aç.";return}
- Notification.requestPermission().then(function(p){$("smsg").textContent=p==="granted"?"Bildirimler açık.":"Bildirim izni verilmedi."});
+ Notification.requestPermission().then(function(p){$("smsg").textContent=p==="granted"?"Bildirimler açık.":"Bildirim izni verilmedi. ("+p+")"});
 };
 $("dme").onclick=function(){if(delT)send({t:"del",id:delT.i,mode:"me"});$("ms").hidden=true};
 $("dall").onclick=function(){if(delT)send({t:"del",id:delT.i,mode:"all"});$("ms").hidden=true};
