@@ -234,7 +234,7 @@ function askWho(names){
 }
 function askPin(who,setting){
  $("qn").textContent="";
- $("qq").textContent=setting?who+", kendine bir PIN belirle (4-8 rakam). Yeni cihazlarda bunu soracağım.":who+", PIN'ini gir.";
+ $("qq").textContent=setting?who+", kendine bir PIN belirle (4-8 rakam). Yeni cihazlarda bunu soracağım.":(who?who+", ":"")+"PIN'ini gir.";
  var box=$("qo");box.innerHTML="";
  var i=document.createElement("input");i.type="password";i.inputMode="numeric";i.maxLength=8;i.autocomplete="off";i.placeholder="PIN";i.setAttribute("aria-label","PIN");
  var b=document.createElement("button");b.className="opt";b.textContent="Devam";
@@ -341,7 +341,7 @@ $("form").onsubmit=function(e){
  send({t:"msg",kind:"text",text:t});$("txt").value="";
 };
 
-var CV="5.1";
+var CV="5.2";
 function idb(){return new Promise(function(res,rej){var r=indexedDB.open("sohbet",1);r.onupgradeneeded=function(){r.result.createObjectStore("kv")};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}
 function idbGet(k){return idb().then(function(d){return new Promise(function(res,rej){var q=d.transaction("kv").objectStore("kv").get(k);q.onsuccess=function(){res(q.result)};q.onerror=function(){rej(q.error)}})})}
 function idbSet(k,v){return idb().then(function(d){return new Promise(function(res,rej){var t=d.transaction("kv","readwrite");if(v===null)t.objectStore("kv").delete(k);else t.objectStore("kv").put(v,k);t.oncomplete=res;t.onerror=function(){rej(t.error)}})})}

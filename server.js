@@ -4,7 +4,7 @@ const { WebSocketServer } = require("ws");
 const PUB = path.join(__dirname, "public");
 const DATA = process.env.DATA_DIR || __dirname;
 const DB_FILE = path.join(DATA, "data.json"), AUD = path.join(DATA, "audio");
-const VERSION = "5.1";
+const VERSION = "5.2";
 const NAMES = ["Stannis", "Harry"];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let pool = null, lastDbError = "";
@@ -16,6 +16,14 @@ const QUIZ = [
   { q: "değil işte değil cici kardeşim sol yanım bir tanem ……………'ım.", a: "Justin Bieber", o: ["Justin Bieber", "Justin Biber", "Justin Timberlake", "Justine Bieber"] }
 ];
 const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = crypto.randomInt(i + 1); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+
+// ---- Sabit kişi PIN'leri (Render > Environment: HARRY_PIN, STANNIS_PIN) ----
+const ENVPIN = { Stannis: process.env.STANNIS_PIN, Harry: process.env.HARRY_PIN };
+const validPin = p => typeof p === "string" && /^\d{4,8}$/.test(p);
+const ENV_BOTH = validPin(ENVPIN.Stannis) && validPin(ENVPIN.Harry) && ENVPIN.Stannis !== ENVPIN.Harry;
+if (process.env.STANNIS_PIN || process.env.HARRY_PIN) {
+  if (!ENV_BOTH) console.log("UYARI: HARRY_PIN ve STANNIS_PIN ikisi de tanimli, 4-8 rakam ve birbirinden farkli olmali");
+}
 
 // ---- Kayıt (Postgres varsa orada, yoksa dosyada) ----
 let db = { members: [], who: {}, devs: {}, pins: {}, ntok: {}, win: null, v: 0, msgs: [], seq: 0, audios: {}, secret: "" };
@@ -79,6 +87,18 @@ async function init() {
   }
   if (!db.audios || typeof db.audios !== "object") db.audios = {};
   if (!db.secret) { db.secret = crypto.randomBytes(32).toString("hex"); save(); }
+  applyEnvPins();
+}
+function applyEnvPins() {            // PIN'ler değiştiyse bütün cihaz bağlantıları ve oturumlar sıfırlanır
+  let sg = "";
+  for (const n of NAMES) {
+    const p = ENVPIN[n];
+    if (!validPin(p)) continue;
+    const salt = crypto.createHash("sha256").update("pin|" + n + "|" + db.secret).digest("hex").slice(0, 16);
+    db.pins[n] = { salt, hash: hashPin(p, salt), env: 1 };
+    sg += n + ":" + db.pins[n].hash + ";";
+  }
+  if (sg && db.envSig !== sg) { db.devs = {}; db.win = null; db.envSig = sg; save(); }
 }
 async function putBlob(id, mime, buf) {
   if (pool) await pq("INSERT INTO blobs(id,mime,data) VALUES($1,$2,$3)", [id, mime, buf]);
@@ -216,6 +236,7 @@ const server = http.createServer((req, res) => {
       if (!s) return json(res, 401, { error: "Giriş gerekli" });
       return readBody(req, body => {
         const pin = clamp(body && body.pin, 12);
+        if (validPin(ENVPIN[s.name])) return json(res, 403, { error: "Bu PIN Render ayarlarından yönetiliyor." });
         if (!/^\d{4,8}$/.test(pin)) return json(res, 400, { error: "PIN 4-8 rakam olmalı." });
         const salt = crypto.randomBytes(8).toString("hex");
         db.pins[s.name] = { salt, hash: hashPin(pin, salt) }; save();
@@ -264,7 +285,12 @@ const server = http.createServer((req, res) => {
         const okPin = /^\d{4,8}$/.test(pin);
         const setPin = n => { const salt = crypto.randomBytes(8).toString("hex"); db.pins[n] = { salt, hash: hashPin(pin, salt) }; };
         let name = db.devs[cid];
-        if (!name) {                                     // yeni cihaz: kişi ve PIN gerekir
+        if (!name && ENV_BOTH) {                         // sabit PIN'ler: PIN kişiyi belirler
+          if (!okPin) return json(res, 200, { need: "pin" });
+          name = NAMES.find(n => db.pins[n] && pinOk(db.pins[n], pin));
+          if (!name) { addFail(ip); return json(res, 422, { error: "PIN yanlış." }); }
+          db.devs[cid] = name;
+        } else if (!name) {                              // yeni cihaz: kişi ve PIN gerekir
           if (!NAMES.includes(who)) return json(res, 200, { need: "who", names: NAMES });
           if (!db.pins[who]) {
             if (Object.values(db.devs).includes(who)) return json(res, 403, { error: "Önce bu kişinin kayıtlı cihazından PIN belirlenmeli." });
