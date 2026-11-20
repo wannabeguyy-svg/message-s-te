@@ -58,6 +58,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
 .nm span{display:inline-flex;align-items:center}
 .mm{background:none;border:0;color:rgba(255,255,255,.55);padding:0 4px;font-size:1.1rem;line-height:1;border-radius:6px}
 .m.del{font-style:italic;color:var(--mut)}
+#me2{display:block;font-size:.75rem;color:#ffcf6b;font-weight:600}
 #warn{background:#3a0f14;color:#ffb3bb;font-size:.8rem;padding:6px 12px;text-align:center}
 button.danger{border-color:#8f1d26;color:#ff8f9b}
 .m:not(.me) .nm{color:#9aa4b2}
@@ -105,7 +106,7 @@ button.danger{border-color:#8f1d26;color:#ff8f9b}
 
 <div id="app" hidden>
   <div id="cbg" aria-hidden="true"><img id="cbi" alt=""></div>
-  <div id="hd"><div id="av"></div><div class="t"><b id="pn">…</b><span id="pst">çevrimdışı</span></div><button id="gear" aria-label="Ayarlar">⚙</button></div>
+  <div id="hd"><div id="av"></div><div class="t"><b id="pn">…</b><span id="pst">çevrimdışı</span><span id="me2"></span></div><button id="gear" aria-label="Ayarlar">⚙</button></div>
   <div id="warn" hidden></div>
   <div id="msgs"><div id="empty">Henüz mesaj yok.</div></div>
   <form id="form"><input id="txt" type="text" maxlength="1000" placeholder="Mesaj yaz…" autocomplete="off" aria-label="Mesaj"><button type="button" class="ib" id="pic" aria-label="Fotoğraf ekle"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button><button type="button" class="ib" id="mic" aria-label="Sesli mesaj kaydet"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button><input id="pf" type="file" accept="image/*" hidden><button class="p" id="sd">Gönder</button></form>
@@ -134,6 +135,9 @@ button.danger{border-color:#8f1d26;color:#ff8f9b}
     <button id="bgrm">Varsayılan arka plan</button>
     <input id="bgf" type="file" accept="image/*" hidden>
     <button id="notif">Bildirimleri aç</button>
+    <input id="ap" type="password" inputmode="numeric" maxlength="8" placeholder="Yeni giriş PIN'i (4-8 rakam)" autocomplete="off" aria-label="Yeni giriş PIN'i">
+    <button id="apsave">Giriş PIN'imi değiştir</button>
+    <button id="unbind">Bu cihazı sıfırla (kişiyi yeniden seç)</button>
     <button id="out">Çıkış yap</button>
     <button id="outall" class="danger">Tüm cihazlardan çıkış</button>
     <button id="sclose">Kapat</button>
@@ -293,7 +297,7 @@ function avatarEl(name,size){
  return d;
 }
 function setHeader(){
- var p=names[1-me];$("pn").textContent=p||"Bekleniyor…";
+ var p=names[1-me];$("pn").textContent=p||"Bekleniyor…";$("me2").textContent="Sen: "+(names[me]||"?");
  var av=$("av");av.innerHTML="";av.appendChild(avatarEl(p,40));
 }
 function notify(title,body){
@@ -337,7 +341,7 @@ $("form").onsubmit=function(e){
  send({t:"msg",kind:"text",text:t});$("txt").value="";
 };
 
-var CV="5.0";
+var CV="5.1";
 function idb(){return new Promise(function(res,rej){var r=indexedDB.open("sohbet",1);r.onupgradeneeded=function(){r.result.createObjectStore("kv")};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}
 function idbGet(k){return idb().then(function(d){return new Promise(function(res,rej){var q=d.transaction("kv").objectStore("kv").get(k);q.onsuccess=function(){res(q.result)};q.onerror=function(){rej(q.error)}})})}
 function idbSet(k,v){return idb().then(function(d){return new Promise(function(res,rej){var t=d.transaction("kv","readwrite");if(v===null)t.objectStore("kv").delete(k);else t.objectStore("kv").put(v,k);t.oncomplete=res;t.onerror=function(){rej(t.error)}})})}
@@ -431,6 +435,18 @@ $("lp").onkeydown=function(e){if(e.key==="Enter")unlock()};
 $("gear").onclick=function(){$("smsg").textContent=pinH?"Uygulama kilidi açık.":"Uygulama kilidi kapalı.";$("np").value="";$("set").hidden=false};
 $("sclose").onclick=function(){$("set").hidden=true};
 $("out").onclick=function(){ss("tk",null);location.reload()};
+$("apsave").onclick=function(){
+ var p=$("ap").value.trim();
+ if(!/^\d{4,8}$/.test(p)){$("smsg").textContent="Giriş PIN'i 4-8 rakam olmalı.";return}
+ fetch("/api/setpin?t="+encodeURIComponent(token),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin:p})})
+  .then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||"Hata");$("ap").value="";$("smsg").textContent="Giriş PIN'in değişti."})})
+  .catch(function(e){$("smsg").textContent=e.message});
+};
+$("unbind").onclick=function(){
+ var t=token;
+ fetch("/api/unbind?t="+encodeURIComponent(t),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cid:cid})})
+  .catch(function(){}).then(function(){ss("tk",null);location.reload()});
+};
 $("outall").onclick=function(){
  var t=token;ss("tk",null);
  fetch("/api/logoutall?t="+encodeURIComponent(t),{method:"POST"}).catch(function(){}).then(function(){location.reload()});

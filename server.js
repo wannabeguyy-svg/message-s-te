@@ -4,7 +4,7 @@ const { WebSocketServer } = require("ws");
 const PUB = path.join(__dirname, "public");
 const DATA = process.env.DATA_DIR || __dirname;
 const DB_FILE = path.join(DATA, "data.json"), AUD = path.join(DATA, "audio");
-const VERSION = "5.0";
+const VERSION = "5.1";
 const NAMES = ["Stannis", "Harry"];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let pool = null, lastDbError = "";
@@ -70,7 +70,7 @@ async function init() {
   for (const k of ["devs", "pins", "ntok"]) if (!db[k] || typeof db[k] !== "object") db[k] = {};
   if (db.v !== 5) {   // eski sürümden geçiş: cihaz sırası yerine kişi sırası (Stannis=0, Harry=1)
     const map = db.members.map(c => NAMES.indexOf(db.who[c]));
-    db.members.forEach(c => { if (NAMES.includes(db.who[c])) db.devs[c] = db.who[c]; });
+    db.devs = {};   // eski cihaz-kişi eşleşmeleri karışık olabilir, herkes baştan seçsin
     db.msgs.forEach(x => {
       if (map[x.f] >= 0) x.f = map[x.f];
       if (x.h) x.h = x.h.map(i => (map[i] >= 0 ? map[i] : i));
@@ -209,6 +209,26 @@ const server = http.createServer((req, res) => {
           save();
         }
         json(res, 200, { token: tok, last: db.seq });
+      });
+    }
+    if (url === "/api/setpin") {
+      const s = sess(q.get("t"));
+      if (!s) return json(res, 401, { error: "Giriş gerekli" });
+      return readBody(req, body => {
+        const pin = clamp(body && body.pin, 12);
+        if (!/^\d{4,8}$/.test(pin)) return json(res, 400, { error: "PIN 4-8 rakam olmalı." });
+        const salt = crypto.randomBytes(8).toString("hex");
+        db.pins[s.name] = { salt, hash: hashPin(pin, salt) }; save();
+        json(res, 200, {});
+      });
+    }
+    if (url === "/api/unbind") {
+      const s = sess(q.get("t"));
+      if (!s) return json(res, 401, { error: "Giriş gerekli" });
+      return readBody(req, body => {
+        const cid = clamp(body && body.cid, 32);
+        if (db.devs[cid] === s.name) { delete db.devs[cid]; save(); }
+        json(res, 200, {});
       });
     }
     if (url === "/api/logoutall") {
