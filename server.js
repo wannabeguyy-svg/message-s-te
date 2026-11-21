@@ -6,7 +6,7 @@ try { webpush = require("web-push"); } catch (e) { console.log("UYARI: web-push 
 const PUB = path.join(__dirname, "public");
 const DATA = process.env.DATA_DIR || __dirname;
 const DB_FILE = path.join(DATA, "data.json"), AUD = path.join(DATA, "audio");
-const VERSION = "5.6";
+const VERSION = "5.8";
 const NAMES = ["Stannis", "Harry"];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let pool = null, lastDbError = "", lastPush = null;

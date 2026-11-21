@@ -71,6 +71,7 @@ button.danger{border-color:#8f1d26;color:#ff8f9b}
 .ib{display:flex;align-items:center;justify-content:center;background:#08080a;border:1px solid #2b2b31;color:#b9b9c4;padding:10px 11px;border-radius:12px}
 .ib:hover{color:#fff;border-color:var(--acc)}.ib:disabled{opacity:.5}
 .ov{position:fixed;inset:0;z-index:50;background:rgba(5,5,6,.97);display:flex;align-items:center;justify-content:center;padding:16px}
+#lock{background:#050506}
 .ov .box{width:100%;max-width:320px;text-align:center}
 .ov h2{margin:0 0 12px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;font-size:1rem;color:var(--red)}
 .ov input{text-align:center;font-size:1.3rem;letter-spacing:.3em;margin-bottom:10px}
@@ -262,7 +263,7 @@ function connect(){
    var w=$("warn");
    if(m.store==="file"){w.hidden=false;w.textContent="Uyarı: Kayıtlar kalıcı değil, veritabanı bağlı değil. "+(m.dberr||"")}else w.hidden=true;
    $("stline").textContent=m.store==="file"?"Kayıt durumu: Geçici, kalıcı değil. "+(m.dberr||""):"Kayıt durumu: Veritabanı bağlı."+(m.dberr?" Son hata: "+m.dberr:"");
-   $("stline").textContent+=" Oturum bitişi: "+new Date(m.exp).toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit"})+".";
+   $("stline").textContent+=" Sürüm "+CV+". Oturum bitişi: "+new Date(m.exp).toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit"})+".";
    $("msgs").innerHTML="";ticks={};els={};
    if(!m.msgs.length)emptyNote();
    m.msgs.forEach(addMsg);showApp(true);markRead();
@@ -363,7 +364,7 @@ async function subscribePush(){
   pushOn=r.ok;return r.ok;
  }catch(e){pushErr=String((e&&e.name)||"")+" "+String((e&&e.message)||"").slice(0,60);return false}
 }
-var CV="5.6";
+var CV="5.8";
 function idb(){return new Promise(function(res,rej){var r=indexedDB.open("sohbet",1);r.onupgradeneeded=function(){r.result.createObjectStore("kv")};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}
 function idbGet(k){return idb().then(function(d){return new Promise(function(res,rej){var q=d.transaction("kv").objectStore("kv").get(k);q.onsuccess=function(){res(q.result)};q.onerror=function(){rej(q.error)}})})}
 function idbSet(k,v){return idb().then(function(d){return new Promise(function(res,rej){var t=d.transaction("kv","readwrite");if(v===null)t.objectStore("kv").delete(k);else t.objectStore("kv").put(v,k);t.oncomplete=res;t.onerror=function(){rej(t.error)}})})}
@@ -445,10 +446,10 @@ function hx(s){
   return Array.prototype.map.call(new Uint8Array(b),function(x){return ("0"+x.toString(16)).slice(-2)}).join("");
  });
 }
-function lock(){if(!pinH)return;locked=true;$("lock").hidden=false;$("set").hidden=true;$("lp").value="";$("lmsg").textContent="";$("lp").focus()}
+function lock(){if(!pinH)return;locked=true;$("app").style.visibility="hidden";$("lock").hidden=false;$("set").hidden=true;$("ms").hidden=true;$("lb").hidden=true;$("lp").value="";$("lmsg").textContent="";$("lp").focus()}
 function unlock(){
  hx(pinS+$("lp").value).then(function(h){
-  if(h===pinH){locked=false;$("lock").hidden=true;unreadN=0;document.title=APPT;setBadge(0);markRead()}
+  if(h===pinH){locked=false;$("app").style.visibility="";$("lock").hidden=true;unreadN=0;document.title=APPT;setBadge(0);markRead()}
   else{$("lmsg").textContent="Yanlış PIN";$("lp").value=""}
  });
 }
