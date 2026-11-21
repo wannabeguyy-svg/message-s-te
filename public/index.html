@@ -135,6 +135,8 @@ button.danger{border-color:#8f1d26;color:#ff8f9b}
     <button id="bgrm">Varsayılan arka plan</button>
     <input id="bgf" type="file" accept="image/*" hidden>
     <button id="notif">Bildirimleri aç</button>
+    <button id="ptest">Test bildirimi (10 sn sonra gelir)</button>
+    <p class="msg" id="pushst"></p>
     <input id="ap" type="password" inputmode="numeric" maxlength="8" placeholder="Yeni giriş PIN'i (4-8 rakam)" autocomplete="off" aria-label="Yeni giriş PIN'i">
     <button id="apsave">Giriş PIN'imi değiştir</button>
     <button id="unbind">Bu cihazı sıfırla (kişiyi yeniden seç)</button>
@@ -163,7 +165,7 @@ function ss(k,v){try{if(v===undefined)return sessionStorage.getItem(k);if(v===nu
 function rnd(n){var b=new Uint8Array(n),s="";crypto.getRandomValues(b);for(var i=0;i<n;i++)s+=("0"+b[i].toString(16)).slice(-2);return s}
 var cid=ls("cid");if(!cid||!/^[a-z0-9]{8,32}$/.test(cid)){cid=rnd(8);ls("cid",cid)}
 var APPT="Cheat Engine";
-var pushOn=false;
+var pushOn=false,pushErr="";
 function setBadge(n){try{if(n>0){if(navigator.setAppBadge)navigator.setAppBadge(n).catch(function(){})}else if(navigator.clearAppBadge)navigator.clearAppBadge().catch(function(){})}catch(e){}}
 ls("tk",null);var token=ss("tk"),ws,me=0,names=[null,null],ticks={},els={},delT=null,swReg=null,locked=false,unreadN=0,hiddenAt=0,pinH=ls("pinh"),pinS=ls("pins"),chatBgDone=false;
 
@@ -357,9 +359,9 @@ async function subscribePush(){
   if(!sub){sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64u(key)});ls("vk",key)}
   var r=await fetch("/api/push-sub?t="+encodeURIComponent(token),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sub:sub.toJSON(),cid:cid})});
   pushOn=r.ok;return r.ok;
- }catch(e){return false}
+ }catch(e){pushErr=String((e&&e.name)||"")+" "+String((e&&e.message)||"").slice(0,60);return false}
 }
-var CV="5.4";
+var CV="5.5";
 function idb(){return new Promise(function(res,rej){var r=indexedDB.open("sohbet",1);r.onupgradeneeded=function(){r.result.createObjectStore("kv")};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}
 function idbGet(k){return idb().then(function(d){return new Promise(function(res,rej){var q=d.transaction("kv").objectStore("kv").get(k);q.onsuccess=function(){res(q.result)};q.onerror=function(){rej(q.error)}})})}
 function idbSet(k,v){return idb().then(function(d){return new Promise(function(res,rej){var t=d.transaction("kv","readwrite");if(v===null)t.objectStore("kv").delete(k);else t.objectStore("kv").put(v,k);t.oncomplete=res;t.onerror=function(){rej(t.error)}})})}
@@ -450,7 +452,7 @@ function unlock(){
 }
 $("lgo").onclick=unlock;
 $("lp").onkeydown=function(e){if(e.key==="Enter")unlock()};
-$("gear").onclick=function(){$("smsg").textContent=pinH?"Uygulama kilidi açık.":"Uygulama kilidi kapalı.";$("np").value="";$("set").hidden=false};
+$("gear").onclick=function(){$("smsg").textContent=pinH?"Uygulama kilidi açık.":"Uygulama kilidi kapalı.";$("np").value="";$("set").hidden=false;pushStatus()};
 $("sclose").onclick=function(){$("set").hidden=true};
 $("out").onclick=function(){ss("tk",null);location.reload()};
 $("apsave").onclick=function(){
@@ -475,6 +477,23 @@ $("notif").onclick=function(){
   if(p!=="granted"){$("smsg").textContent="Bildirim izni verilmedi. ("+p+")";return}
   subscribePush().then(function(ok){$("smsg").textContent=ok?"Bildirimler açık, uygulama kapalıyken de gelir.":"Bildirimler açık ama uygulama kapalıyken gelmeyebilir."});
  });
+};
+async function pushStatus(){
+ var el=$("pushst");el.textContent="Bildirim durumu kontrol ediliyor…";
+ try{
+  var perm="Notification" in window?Notification.permission:"yok",sub=null;
+  if("serviceWorker" in navigator&&"PushManager" in window){var reg=await navigator.serviceWorker.ready;sub=await reg.pushManager.getSubscription()}
+  var j=await (await fetch("/api/pushinfo?t="+encodeURIComponent(token))).json();
+  var t="İzin: "+perm+". Tarayıcı aboneliği: "+(sub?"var":"yok")+". Sunucu: "+(j.lib?"web-push yüklü":"web-push YÜKLÜ DEĞİL (package.json yüklenmemiş)")+", kayıtlı cihaz: "+j.subs+".";
+  if(j.last)t+=" Son gönderim: "+(j.last.ok?"başarılı":"hata "+j.last.err)+".";
+  if(pushErr)t+=" Abonelik hatası: "+pushErr+".";
+  el.textContent=t;
+ }catch(e){el.textContent="Bildirim durumu okunamadı."}
+}
+$("ptest").onclick=function(){
+ fetch("/api/pushtest?t="+encodeURIComponent(token),{method:"POST"}).then(function(r){
+  $("smsg").textContent=r.ok?"Test gönderilecek. Şimdi uygulamayı tamamen kapat, 10 saniye içinde bildirim gelmeli.":"Sunucuda itme bildirimi kapalı (web-push yüklü değil)."
+ }).catch(function(){$("smsg").textContent="Gönderilemedi."});
 };
 $("dme").onclick=function(){if(delT)send({t:"del",id:delT.i,mode:"me"});$("ms").hidden=true};
 $("dall").onclick=function(){if(delT)send({t:"del",id:delT.i,mode:"all"});$("ms").hidden=true};

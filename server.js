@@ -6,10 +6,10 @@ try { webpush = require("web-push"); } catch (e) { console.log("UYARI: web-push 
 const PUB = path.join(__dirname, "public");
 const DATA = process.env.DATA_DIR || __dirname;
 const DB_FILE = path.join(DATA, "data.json"), AUD = path.join(DATA, "audio");
-const VERSION = "5.4";
+const VERSION = "5.5";
 const NAMES = ["Stannis", "Harry"];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-let pool = null, lastDbError = "";
+let pool = null, lastDbError = "", lastPush = null;
 
 // ---- Sorular (cevaplar sadece sunucuda durur) ----
 const QUIZ = [
@@ -212,6 +212,11 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && url === "/api/quiz") {
     return json(res, 200, { qs: QUIZ.map(x => ({ q: x.q, o: shuffle(x.o) })) });
   }
+  if (req.method === "GET" && url === "/api/pushinfo") {
+    const s = sess(q.get("t"));
+    if (!s) return json(res, 401, { error: "Giriş gerekli" });
+    return json(res, 200, { lib: !!webpush, key: !!db.vapid, subs: Object.values(db.subs).filter(e => e.name === s.name).length, last: lastPush && lastPush.name === s.name ? lastPush : null });
+  }
   if (req.method === "GET" && url === "/api/vapid") {
     return json(res, 200, { key: webpush && db.vapid ? db.vapid.publicKey : "" });
   }
@@ -226,6 +231,13 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === "POST") {
+    if (url === "/api/pushtest") {
+      const s = sess(q.get("t"));
+      if (!s) return json(res, 401, { error: "Giriş gerekli" });
+      if (!webpush) return json(res, 400, { error: "web-push yüklü değil" });
+      setTimeout(() => sendPushTo(s.name, 1), 10000);
+      return json(res, 200, { ok: 1 });
+    }
     if (url === "/api/push-sub") {
       const s = sess(q.get("t"));
       if (!s) return json(res, 401, { error: "Giriş gerekli" });
@@ -359,18 +371,27 @@ const wss = new WebSocketServer({ server, maxPayload: 4096 });
 const online = new Set();
 const send = (w, o) => { if (w.readyState === 1) w.send(JSON.stringify(o)); };
 const broadcast = o => online.forEach(w => send(w, o));
+function sendPushTo(rname, n) {
+  if (!webpush) return 0;
+  let c = 0;
+  Object.keys(db.subs).forEach(id => {
+    const e = db.subs[id];
+    if (e.name !== rname) return;
+    c++;
+    webpush.sendNotification(e.sub, JSON.stringify({ n }), { TTL: 86400, urgency: "high" }).then(() => {
+      lastPush = { t: Date.now(), ok: true, name: rname };
+    }).catch(err => {
+      lastPush = { t: Date.now(), ok: false, name: rname, err: String((err && (err.statusCode || err.message)) || "hata").slice(0, 60) };
+      if (err && (err.statusCode === 404 || err.statusCode === 410)) { delete db.subs[id]; save(); }
+    });
+  });
+  return c;
+}
 function pushNew(x) {                 // alıcı sohbete bakmıyorsa itme bildirimi gönder
   if (!webpush) return;
   const ri = 1 - x.f, rname = NAMES[ri];
   if ([...online].some(w => w.name === rname && w.vis)) return;
-  const n = db.msgs.filter(m => m.f !== ri && !m.r && !(m.h && m.h.includes(ri))).length;
-  Object.keys(db.subs).forEach(id => {
-    const e = db.subs[id];
-    if (e.name !== rname) return;
-    webpush.sendNotification(e.sub, JSON.stringify({ n }), { TTL: 86400, urgency: "high" }).catch(err => {
-      if (err && (err.statusCode === 404 || err.statusCode === 410)) { delete db.subs[id]; save(); }
-    });
-  });
+  sendPushTo(rname, db.msgs.filter(m => m.f !== ri && !m.r && !(m.h && m.h.includes(ri))).length);
 }
 const presence = () => online.forEach(w => send(w, { t: "p", other: [...online].some(o => o.name !== w.name) }));
 
