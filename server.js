@@ -1,10 +1,12 @@
 const http = require("http"), fs = require("fs"), path = require("path"), crypto = require("crypto");
 const { WebSocketServer } = require("ws");
+let webpush = null;
+try { webpush = require("web-push"); } catch (e) { console.log("UYARI: web-push yuklu degil, uygulama kapaliyken bildirim yok"); }
 
 const PUB = path.join(__dirname, "public");
 const DATA = process.env.DATA_DIR || __dirname;
 const DB_FILE = path.join(DATA, "data.json"), AUD = path.join(DATA, "audio");
-const VERSION = "5.2";
+const VERSION = "5.4";
 const NAMES = ["Stannis", "Harry"];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let pool = null, lastDbError = "";
@@ -26,7 +28,7 @@ if (process.env.STANNIS_PIN || process.env.HARRY_PIN) {
 }
 
 // ---- Kayıt (Postgres varsa orada, yoksa dosyada) ----
-let db = { members: [], who: {}, devs: {}, pins: {}, ntok: {}, win: null, v: 0, msgs: [], seq: 0, audios: {}, secret: "" };
+let db = { members: [], who: {}, devs: {}, pins: {}, ntok: {}, subs: {}, vapid: null, win: null, v: 0, msgs: [], seq: 0, audios: {}, secret: "" };
 let timer = null, chain = Promise.resolve();
 const UPSERT = "INSERT INTO kv(k,v) VALUES('state',$1) ON CONFLICT(k) DO UPDATE SET v=EXCLUDED.v";
 async function pq(sql, params) {            // başarısız olursa birkaç kez yeniden dener
@@ -88,6 +90,11 @@ async function init() {
   if (!db.audios || typeof db.audios !== "object") db.audios = {};
   if (!db.secret) { db.secret = crypto.randomBytes(32).toString("hex"); save(); }
   applyEnvPins();
+  if (!db.subs || typeof db.subs !== "object") db.subs = {};
+  if (webpush) {
+    if (!db.vapid) { db.vapid = webpush.generateVAPIDKeys(); save(); }
+    webpush.setVapidDetails("mailto:sohbet@example.com", db.vapid.publicKey, db.vapid.privateKey);
+  }
 }
 function applyEnvPins() {            // PIN'ler değiştiyse bütün cihaz bağlantıları ve oturumlar sıfırlanır
   let sg = "";
@@ -205,6 +212,9 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && url === "/api/quiz") {
     return json(res, 200, { qs: QUIZ.map(x => ({ q: x.q, o: shuffle(x.o) })) });
   }
+  if (req.method === "GET" && url === "/api/vapid") {
+    return json(res, 200, { key: webpush && db.vapid ? db.vapid.publicKey : "" });
+  }
   if (req.method === "GET" && url === "/api/poll") {
     const n = db.ntok[q.get("d")];
     if (!n) return json(res, 401, { error: "Geçersiz" });
@@ -216,6 +226,20 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === "POST") {
+    if (url === "/api/push-sub") {
+      const s = sess(q.get("t"));
+      if (!s) return json(res, 401, { error: "Giriş gerekli" });
+      return readBody(req, body => {
+        const sub = body && body.sub, cid = clamp(body && body.cid, 32);
+        if (!webpush || !sub || typeof sub.endpoint !== "string" || !/^https:\/\//.test(sub.endpoint) || sub.endpoint.length > 600 ||
+            !sub.keys || typeof sub.keys.p256dh !== "string" || typeof sub.keys.auth !== "string") return json(res, 400, { error: "Geçersiz abonelik" });
+        const id = crypto.createHash("sha1").update(sub.endpoint).digest("hex");
+        db.subs[id] = { name: s.name, cid, sub: { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh.slice(0, 200), auth: sub.keys.auth.slice(0, 100) } } };
+        const mine = Object.keys(db.subs).filter(k => db.subs[k].name === s.name);
+        if (mine.length > 10) delete db.subs[mine[0]];
+        save(); json(res, 200, { ok: 1 });
+      });
+    }
     if (url === "/api/devtoken") {
       const s = sess(q.get("t"));
       if (!s) return json(res, 401, { error: "Giriş gerekli" });
@@ -249,6 +273,7 @@ const server = http.createServer((req, res) => {
       return readBody(req, body => {
         const cid = clamp(body && body.cid, 32);
         if (db.devs[cid] === s.name) { delete db.devs[cid]; save(); }
+        Object.keys(db.subs).forEach(k => { if (db.subs[k].cid === cid && db.subs[k].name === s.name) delete db.subs[k]; });
         json(res, 200, {});
       });
     }
@@ -334,6 +359,19 @@ const wss = new WebSocketServer({ server, maxPayload: 4096 });
 const online = new Set();
 const send = (w, o) => { if (w.readyState === 1) w.send(JSON.stringify(o)); };
 const broadcast = o => online.forEach(w => send(w, o));
+function pushNew(x) {                 // alıcı sohbete bakmıyorsa itme bildirimi gönder
+  if (!webpush) return;
+  const ri = 1 - x.f, rname = NAMES[ri];
+  if ([...online].some(w => w.name === rname && w.vis)) return;
+  const n = db.msgs.filter(m => m.f !== ri && !m.r && !(m.h && m.h.includes(ri))).length;
+  Object.keys(db.subs).forEach(id => {
+    const e = db.subs[id];
+    if (e.name !== rname) return;
+    webpush.sendNotification(e.sub, JSON.stringify({ n }), { TTL: 86400, urgency: "high" }).catch(err => {
+      if (err && (err.statusCode === 404 || err.statusCode === 410)) { delete db.subs[id]; save(); }
+    });
+  });
+}
 const presence = () => online.forEach(w => send(w, { t: "p", other: [...online].some(o => o.name !== w.name) }));
 
 wss.on("connection", ws => {
@@ -371,10 +409,13 @@ wss.on("connection", ws => {
       db.msgs.push(x); trim(); save();
       broadcast({ t: "msg", m: x });
       pollers.forEach(p => { if (p.idx !== x.f) answerPoll(p); });
+      pushNew(x);
     } else if (m.t === "read") {
       const ids = [];
       db.msgs.forEach(x => { if (x.f !== ws.idx && !x.r) { x.r = 1; ids.push(x.i); } });
       if (ids.length) { save(); broadcast({ t: "read", ids }); }
+    } else if (m.t === "vis") {
+      ws.vis = !!m.v;
     } else if (m.t === "del") {
       const j = db.msgs.findIndex(y => y.i === +m.id), x = db.msgs[j];
       if (!x) return;

@@ -163,6 +163,7 @@ function ss(k,v){try{if(v===undefined)return sessionStorage.getItem(k);if(v===nu
 function rnd(n){var b=new Uint8Array(n),s="";crypto.getRandomValues(b);for(var i=0;i<n;i++)s+=("0"+b[i].toString(16)).slice(-2);return s}
 var cid=ls("cid");if(!cid||!/^[a-z0-9]{8,32}$/.test(cid)){cid=rnd(8);ls("cid",cid)}
 var APPT="Cheat Engine";
+var pushOn=false;
 function setBadge(n){try{if(n>0){if(navigator.setAppBadge)navigator.setAppBadge(n).catch(function(){})}else if(navigator.clearAppBadge)navigator.clearAppBadge().catch(function(){})}catch(e){}}
 ls("tk",null);var token=ss("tk"),ws,me=0,names=[null,null],ticks={},els={},delT=null,swReg=null,locked=false,unreadN=0,hiddenAt=0,pinH=ls("pinh"),pinS=ls("pins"),chatBgDone=false;
 
@@ -262,6 +263,7 @@ function connect(){
    $("msgs").innerHTML="";ticks={};els={};
    if(!m.msgs.length)emptyNote();
    m.msgs.forEach(addMsg);showApp(true);markRead();
+   send({t:"vis",v:document.visibilityState==="visible"});subscribePush();
    if(document.visibilityState!=="visible"){unreadN=m.msgs.filter(function(x){return x.f!==m.me&&!x.r}).length;document.title=unreadN?"("+unreadN+") "+APPT:APPT;setBadge(unreadN)}
    if(window.Android&&Android.setNotifyToken){
     fetch("/api/devtoken?t="+encodeURIComponent(token),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cid:cid})})
@@ -276,7 +278,7 @@ function connect(){
    addMsg(m.m);
    if(m.m.f!==me){
     if(document.visibilityState==="visible"&&!locked)markRead();
-    else{unreadN++;document.title="("+unreadN+") "+APPT;setBadge(unreadN);notify("Yeni mesajın var!","")}
+    else{unreadN++;document.title="("+unreadN+") "+APPT;setBadge(unreadN);if(!pushOn||document.visibilityState==="visible")notify("Yeni mesajın var!","")}
    }
   }else if(m.t==="read"){
    m.ids.forEach(function(i){var t=ticks[i];if(t){t.textContent="✓✓";t.classList.add("rd")}});
@@ -344,7 +346,20 @@ $("form").onsubmit=function(e){
  send({t:"msg",kind:"text",text:t});$("txt").value="";
 };
 
-var CV="5.2";
+function b64u(s){var p="=".repeat((4-s.length%4)%4),b=(s+p).replace(/-/g,"+").replace(/_/g,"/"),r=atob(b),o=new Uint8Array(r.length);for(var i=0;i<r.length;i++)o[i]=r.charCodeAt(i);return o}
+async function subscribePush(){
+ try{
+  if(!("serviceWorker" in navigator)||!("PushManager" in window)||Notification.permission!=="granted")return false;
+  var reg=await navigator.serviceWorker.ready;
+  var key=(await (await fetch("/api/vapid")).json()).key;if(!key)return false;
+  var sub=await reg.pushManager.getSubscription();
+  if(sub&&ls("vk")!==key){await sub.unsubscribe();sub=null}
+  if(!sub){sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64u(key)});ls("vk",key)}
+  var r=await fetch("/api/push-sub?t="+encodeURIComponent(token),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sub:sub.toJSON(),cid:cid})});
+  pushOn=r.ok;return r.ok;
+ }catch(e){return false}
+}
+var CV="5.4";
 function idb(){return new Promise(function(res,rej){var r=indexedDB.open("sohbet",1);r.onupgradeneeded=function(){r.result.createObjectStore("kv")};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}
 function idbGet(k){return idb().then(function(d){return new Promise(function(res,rej){var q=d.transaction("kv").objectStore("kv").get(k);q.onsuccess=function(){res(q.result)};q.onerror=function(){rej(q.error)}})})}
 function idbSet(k,v){return idb().then(function(d){return new Promise(function(res,rej){var t=d.transaction("kv","readwrite");if(v===null)t.objectStore("kv").delete(k);else t.objectStore("kv").put(v,k);t.oncomplete=res;t.onerror=function(){rej(t.error)}})})}
@@ -456,7 +471,10 @@ $("outall").onclick=function(){
 };
 $("notif").onclick=function(){
  if(!("Notification" in window)){$("smsg").textContent="Bu tarayıcı bildirim desteklemiyor. iPhone'da siteyi ana ekrana ekleyip oradan aç.";return}
- Notification.requestPermission().then(function(p){$("smsg").textContent=p==="granted"?"Bildirimler açık.":"Bildirim izni verilmedi. ("+p+")"});
+ Notification.requestPermission().then(function(p){
+  if(p!=="granted"){$("smsg").textContent="Bildirim izni verilmedi. ("+p+")";return}
+  subscribePush().then(function(ok){$("smsg").textContent=ok?"Bildirimler açık, uygulama kapalıyken de gelir.":"Bildirimler açık ama uygulama kapalıyken gelmeyebilir."});
+ });
 };
 $("dme").onclick=function(){if(delT)send({t:"del",id:delT.i,mode:"me"});$("ms").hidden=true};
 $("dall").onclick=function(){if(delT)send({t:"del",id:delT.i,mode:"all"});$("ms").hidden=true};
@@ -479,6 +497,7 @@ $("pinsave").onclick=function(){
 $("pinrm").onclick=function(){pinH=null;pinS=null;ls("pinh",null);ls("pins",null);$("smsg").textContent="Kilit kaldırıldı."};
 $("lknow").onclick=function(){if(!pinH){$("smsg").textContent="Önce bir PIN belirle.";return}lock()};
 document.addEventListener("visibilitychange",function(){
+ send({t:"vis",v:document.visibilityState==="visible"});
  if(document.visibilityState==="hidden"){hiddenAt=Date.now()}
  else{
   unreadN=0;document.title=APPT;setBadge(0);
