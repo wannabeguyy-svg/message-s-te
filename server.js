@@ -6,7 +6,7 @@ try { webpush = require("web-push"); } catch (e) { console.log("UYARI: web-push 
 const PUB = path.join(__dirname, "public");
 const DATA = process.env.DATA_DIR || __dirname;
 const DB_FILE = path.join(DATA, "data.json"), AUD = path.join(DATA, "audio");
-const VERSION = "5.5";
+const VERSION = "5.6";
 const NAMES = ["Stannis", "Harry"];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let pool = null, lastDbError = "", lastPush = null;
@@ -28,7 +28,7 @@ if (process.env.STANNIS_PIN || process.env.HARRY_PIN) {
 }
 
 // ---- Kayıt (Postgres varsa orada, yoksa dosyada) ----
-let db = { members: [], who: {}, devs: {}, pins: {}, ntok: {}, subs: {}, vapid: null, win: null, v: 0, msgs: [], seq: 0, audios: {}, secret: "" };
+let db = { members: [], who: {}, devs: {}, pins: {}, ntok: {}, subs: {}, prefs: {}, vapid: null, win: null, v: 0, msgs: [], seq: 0, audios: {}, secret: "" };
 let timer = null, chain = Promise.resolve();
 const UPSERT = "INSERT INTO kv(k,v) VALUES('state',$1) ON CONFLICT(k) DO UPDATE SET v=EXCLUDED.v";
 async function pq(sql, params) {            // başarısız olursa birkaç kez yeniden dener
@@ -91,6 +91,7 @@ async function init() {
   if (!db.secret) { db.secret = crypto.randomBytes(32).toString("hex"); save(); }
   applyEnvPins();
   if (!db.subs || typeof db.subs !== "object") db.subs = {};
+  if (!db.prefs || typeof db.prefs !== "object") db.prefs = {};
   if (webpush) {
     if (!db.vapid) { db.vapid = webpush.generateVAPIDKeys(); save(); }
     webpush.setVapidDetails("mailto:sohbet@example.com", db.vapid.publicKey, db.vapid.privateKey);
@@ -231,6 +232,11 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === "POST") {
+    if (url === "/api/pref") {
+      const s = sess(q.get("t"));
+      if (!s) return json(res, 401, { error: "Giriş gerekli" });
+      return readBody(req, body => { db.prefs[s.name] = { quiet: !!(body && body.quiet) }; save(); json(res, 200, {}); });
+    }
     if (url === "/api/pushtest") {
       const s = sess(q.get("t"));
       if (!s) return json(res, 401, { error: "Giriş gerekli" });
@@ -371,6 +377,7 @@ const wss = new WebSocketServer({ server, maxPayload: 4096 });
 const online = new Set();
 const send = (w, o) => { if (w.readyState === 1) w.send(JSON.stringify(o)); };
 const broadcast = o => online.forEach(w => send(w, o));
+const isQuiet = name => !(db.prefs[name] && db.prefs[name].quiet === false);   // varsayılan: sadece rakam
 function sendPushTo(rname, n) {
   if (!webpush) return 0;
   let c = 0;
@@ -378,7 +385,7 @@ function sendPushTo(rname, n) {
     const e = db.subs[id];
     if (e.name !== rname) return;
     c++;
-    webpush.sendNotification(e.sub, JSON.stringify({ n }), { TTL: 86400, urgency: "high" }).then(() => {
+    webpush.sendNotification(e.sub, JSON.stringify({ n, q: isQuiet(rname) ? 1 : 0 }), { TTL: 86400, urgency: "high" }).then(() => {
       lastPush = { t: Date.now(), ok: true, name: rname };
     }).catch(err => {
       lastPush = { t: Date.now(), ok: false, name: rname, err: String((err && (err.statusCode || err.message)) || "hata").slice(0, 60) };
@@ -405,7 +412,7 @@ wss.on("connection", ws => {
       if (s) {
         ws.name = s.name; ws.idx = s.idx; ws.exp = s.exp; online.add(ws);
         const mine = db.msgs.filter(x => !(x.h && x.h.includes(ws.idx))).slice(-100).map(x => { const { h, ...y } = x; return y; });
-        send(ws, { t: "ready", v: VERSION, exp: ws.exp, me: ws.idx, names: nameList(), store: pool ? "db" : "file", dberr: lastDbError, msgs: mine });
+        send(ws, { t: "ready", v: VERSION, exp: ws.exp, me: ws.idx, names: nameList(), quiet: isQuiet(ws.name), store: pool ? "db" : "file", dberr: lastDbError, msgs: mine });
         presence();
       } else { send(ws, { t: "bad" }); ws.close(); }
       return;

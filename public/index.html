@@ -135,6 +135,7 @@ button.danger{border-color:#8f1d26;color:#ff8f9b}
     <button id="bgrm">Varsayılan arka plan</button>
     <input id="bgf" type="file" accept="image/*" hidden>
     <button id="notif">Bildirimleri aç</button>
+    <button id="qbtn">Sadece rakam göster</button>
     <button id="ptest">Test bildirimi (10 sn sonra gelir)</button>
     <p class="msg" id="pushst"></p>
     <input id="ap" type="password" inputmode="numeric" maxlength="8" placeholder="Yeni giriş PIN'i (4-8 rakam)" autocomplete="off" aria-label="Yeni giriş PIN'i">
@@ -165,7 +166,7 @@ function ss(k,v){try{if(v===undefined)return sessionStorage.getItem(k);if(v===nu
 function rnd(n){var b=new Uint8Array(n),s="";crypto.getRandomValues(b);for(var i=0;i<n;i++)s+=("0"+b[i].toString(16)).slice(-2);return s}
 var cid=ls("cid");if(!cid||!/^[a-z0-9]{8,32}$/.test(cid)){cid=rnd(8);ls("cid",cid)}
 var APPT="Cheat Engine";
-var pushOn=false,pushErr="";
+var pushOn=false,pushErr="",quiet=true;
 function setBadge(n){try{if(n>0){if(navigator.setAppBadge)navigator.setAppBadge(n).catch(function(){})}else if(navigator.clearAppBadge)navigator.clearAppBadge().catch(function(){})}catch(e){}}
 ls("tk",null);var token=ss("tk"),ws,me=0,names=[null,null],ticks={},els={},delT=null,swReg=null,locked=false,unreadN=0,hiddenAt=0,pinH=ls("pinh"),pinS=ls("pins"),chatBgDone=false;
 
@@ -265,6 +266,7 @@ function connect(){
    $("msgs").innerHTML="";ticks={};els={};
    if(!m.msgs.length)emptyNote();
    m.msgs.forEach(addMsg);showApp(true);markRead();
+   quiet=m.quiet!==false;qLabel();
    send({t:"vis",v:document.visibilityState==="visible"});subscribePush();
    if(document.visibilityState!=="visible"){unreadN=m.msgs.filter(function(x){return x.f!==m.me&&!x.r}).length;document.title=unreadN?"("+unreadN+") "+APPT:APPT;setBadge(unreadN)}
    if(window.Android&&Android.setNotifyToken){
@@ -280,7 +282,7 @@ function connect(){
    addMsg(m.m);
    if(m.m.f!==me){
     if(document.visibilityState==="visible"&&!locked)markRead();
-    else{unreadN++;document.title="("+unreadN+") "+APPT;setBadge(unreadN);if(!pushOn||document.visibilityState==="visible")notify("Yeni mesajın var!","")}
+    else{unreadN++;document.title="("+unreadN+") "+APPT;setBadge(unreadN);if(!quiet&&(!pushOn||document.visibilityState==="visible"))notify("Yeni mesajın var!","")}
    }
   }else if(m.t==="read"){
    m.ids.forEach(function(i){var t=ticks[i];if(t){t.textContent="✓✓";t.classList.add("rd")}});
@@ -361,7 +363,7 @@ async function subscribePush(){
   pushOn=r.ok;return r.ok;
  }catch(e){pushErr=String((e&&e.name)||"")+" "+String((e&&e.message)||"").slice(0,60);return false}
 }
-var CV="5.5";
+var CV="5.6";
 function idb(){return new Promise(function(res,rej){var r=indexedDB.open("sohbet",1);r.onupgradeneeded=function(){r.result.createObjectStore("kv")};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}
 function idbGet(k){return idb().then(function(d){return new Promise(function(res,rej){var q=d.transaction("kv").objectStore("kv").get(k);q.onsuccess=function(){res(q.result)};q.onerror=function(){rej(q.error)}})})}
 function idbSet(k,v){return idb().then(function(d){return new Promise(function(res,rej){var t=d.transaction("kv","readwrite");if(v===null)t.objectStore("kv").delete(k);else t.objectStore("kv").put(v,k);t.oncomplete=res;t.onerror=function(){rej(t.error)}})})}
@@ -490,6 +492,11 @@ async function pushStatus(){
   el.textContent=t;
  }catch(e){el.textContent="Bildirim durumu okunamadı."}
 }
+function qLabel(){$("qbtn").textContent="Sadece rakam göster: "+(quiet?"açık":"kapalı")}
+$("qbtn").onclick=function(){
+ quiet=!quiet;qLabel();
+ fetch("/api/pref?t="+encodeURIComponent(token),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({quiet:quiet})}).catch(function(){});
+};
 $("ptest").onclick=function(){
  fetch("/api/pushtest?t="+encodeURIComponent(token),{method:"POST"}).then(function(r){
   $("smsg").textContent=r.ok?"Test gönderilecek. Şimdi uygulamayı tamamen kapat, 10 saniye içinde bildirim gelmeli.":"Sunucuda itme bildirimi kapalı (web-push yüklü değil)."
