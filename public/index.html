@@ -8,7 +8,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
-<title>Sohbet</title>
+<title>Cheat Engine</title>
 <style>
 :root{--bg:#050506;--fg:#ececf0;--mut:#8a8a94;--acc:#c8323c;--glow:rgba(200,50,60,.35);--line:rgba(255,255,255,.09);--pan:rgba(14,14,17,.82);--red:#ff6b78;color-scheme:dark}
 *{box-sizing:border-box}html,body{height:100%;margin:0}
@@ -162,6 +162,8 @@ function ls(k,v){try{if(v===undefined)return localStorage.getItem(k);if(v===null
 function ss(k,v){try{if(v===undefined)return sessionStorage.getItem(k);if(v===null)sessionStorage.removeItem(k);else sessionStorage.setItem(k,v)}catch(e){}return null}
 function rnd(n){var b=new Uint8Array(n),s="";crypto.getRandomValues(b);for(var i=0;i<n;i++)s+=("0"+b[i].toString(16)).slice(-2);return s}
 var cid=ls("cid");if(!cid||!/^[a-z0-9]{8,32}$/.test(cid)){cid=rnd(8);ls("cid",cid)}
+var APPT="Cheat Engine";
+function setBadge(n){try{if(n>0){if(navigator.setAppBadge)navigator.setAppBadge(n).catch(function(){})}else if(navigator.clearAppBadge)navigator.clearAppBadge().catch(function(){})}catch(e){}}
 ls("tk",null);var token=ss("tk"),ws,me=0,names=[null,null],ticks={},els={},delT=null,swReg=null,locked=false,unreadN=0,hiddenAt=0,pinH=ls("pinh"),pinS=ls("pins"),chatBgDone=false;
 
 // açılış logosu (bir oturumda bir kez)
@@ -260,6 +262,7 @@ function connect(){
    $("msgs").innerHTML="";ticks={};els={};
    if(!m.msgs.length)emptyNote();
    m.msgs.forEach(addMsg);showApp(true);markRead();
+   if(document.visibilityState!=="visible"){unreadN=m.msgs.filter(function(x){return x.f!==m.me&&!x.r}).length;document.title=unreadN?"("+unreadN+") "+APPT:APPT;setBadge(unreadN)}
    if(window.Android&&Android.setNotifyToken){
     fetch("/api/devtoken?t="+encodeURIComponent(token),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cid:cid})})
      .then(function(r){return r.json()}).then(function(j){if(j.token)Android.setNotifyToken(j.token,String(j.last))}).catch(function(){});
@@ -273,7 +276,7 @@ function connect(){
    addMsg(m.m);
    if(m.m.f!==me){
     if(document.visibilityState==="visible"&&!locked)markRead();
-    else{unreadN++;document.title="("+unreadN+") Sohbet";notify(nm(m.m.f),"Yeni mesaj.")}
+    else{unreadN++;document.title="("+unreadN+") "+APPT;setBadge(unreadN);notify("Yeni mesajın var!","")}
    }
   }else if(m.t==="read"){
    m.ids.forEach(function(i){var t=ticks[i];if(t){t.textContent="✓✓";t.classList.add("rd")}});
@@ -426,7 +429,7 @@ function hx(s){
 function lock(){if(!pinH)return;locked=true;$("lock").hidden=false;$("set").hidden=true;$("lp").value="";$("lmsg").textContent="";$("lp").focus()}
 function unlock(){
  hx(pinS+$("lp").value).then(function(h){
-  if(h===pinH){locked=false;$("lock").hidden=true;markRead()}
+  if(h===pinH){locked=false;$("lock").hidden=true;unreadN=0;document.title=APPT;setBadge(0);markRead()}
   else{$("lmsg").textContent="Yanlış PIN";$("lp").value=""}
  });
 }
@@ -478,7 +481,7 @@ $("lknow").onclick=function(){if(!pinH){$("smsg").textContent="Önce bir PIN bel
 document.addEventListener("visibilitychange",function(){
  if(document.visibilityState==="hidden"){hiddenAt=Date.now()}
  else{
-  unreadN=0;document.title="Sohbet";
+  unreadN=0;document.title=APPT;setBadge(0);
   if(pinH&&token&&hiddenAt&&Date.now()-hiddenAt>30000)lock();
   markRead();
  }
